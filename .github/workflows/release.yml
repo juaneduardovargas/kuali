@@ -25,21 +25,21 @@ jobs:
       dmg-sha256: ${{ steps.checksums.outputs.dmg }}
     steps:
       - name: Check out repository
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
       - name: Install Node.js
-        uses: actions/setup-node@v7
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
         with:
           node-version: 22
 
       - name: Install Rust 1.89
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87
         with:
           toolchain: 1.89
           targets: aarch64-apple-darwin
 
       - name: Cache Rust artifacts
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2
 
       - name: Read the version being released
         id: version
@@ -58,6 +58,26 @@ jobs:
       - name: Build the Chrome Web Store package
         run: npm --prefix browser-extension run package:store
 
+      - name: Require Apple signing and notarization credentials
+        env:
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          missing=()
+          for name in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD; do
+            if [ -z "${!name}" ]; then missing+=("$name"); fi
+          done
+          if [ "${#missing[@]}" -ne 0 ]; then
+            echo "Missing required release secrets: ${missing[*]}" >&2
+            exit 1
+          fi
+
       # Kuali's releases have always carried written notes. An annotated tag
       # is where they come from, so the description lives with the commit it
       # describes instead of being retyped into the web interface afterwards.
@@ -74,12 +94,21 @@ jobs:
           notes=$(git tag -l --format='%(contents)' "$GITHUB_REF_NAME")
           gh release create "$GITHUB_REF_NAME" \
             --title "Kuali $VERSION" \
-            --notes "${notes:-Kuali $VERSION.}"
+            --notes "${notes:-Kuali $VERSION.}" \
+            --draft
 
       - name: Build the app and publish the release
-        uses: tauri-apps/tauri-action@v0
+        uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Tauri imports the Developer ID certificate, signs the app, and
+          # submits it to Apple before the DMG is uploaded.
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
           # Without these the updater artifacts are unsigned, and an unsigned
           # update is one every installed copy will refuse.
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
@@ -87,12 +116,25 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: Kuali ${{ steps.version.outputs.version }}
-          releaseDraft: false
+          # Keep every asset private until the resulting bundle passes the
+          # local signature, Gatekeeper, and notarization-ticket checks below.
+          releaseDraft: true
           prerelease: false
           # latest.json is the updater endpoint; it has to ship with the build
           # it describes or installed copies check against a stale manifest.
           includeUpdaterJson: true
           args: --target aarch64-apple-darwin
+
+      - name: Verify the Developer ID signature and notarization ticket
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          app="target/aarch64-apple-darwin/release/bundle/macos/Kuali.app"
+          dmg="target/aarch64-apple-darwin/release/bundle/dmg/Kuali_${VERSION}_aarch64.dmg"
+          codesign --verify --deep --strict --verbose=2 "$app"
+          spctl --assess --type execute --verbose=2 "$app"
+          xcrun stapler validate "$app"
+          xcrun stapler validate "$dmg"
 
       - name: Checksum the disk image
         id: checksums
@@ -115,6 +157,11 @@ jobs:
             browser-extension/dist/*.zip.sha256 \
             --clobber
 
+      - name: Publish the verified release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "$GITHUB_REF_NAME" --draft=false --latest
+
   tap:
     name: Homebrew tap
     needs: macos
@@ -136,7 +183,7 @@ jobs:
 
       - name: Check out the tap
         if: steps.gate.outputs.ready == 'true'
-        uses: actions/checkout@v7
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           repository: igarrux/homebrew-kuali
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}

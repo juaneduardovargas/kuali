@@ -156,7 +156,7 @@ async function ensureBrowser(explicitPath) {
   return executable;
 }
 
-async function patchedExtension(port, temporaryRoot) {
+async function patchedExtension(port, pairingToken, temporaryRoot) {
   const destination = join(temporaryRoot, "extension");
   await cp(extensionDir, destination, {
     recursive: true,
@@ -169,11 +169,15 @@ async function patchedExtension(port, temporaryRoot) {
   const manifestPath = join(destination, "manifest.json");
   await writeFile(
     backgroundPath,
-    (await readFile(backgroundPath, "utf8")).replace("const DEFAULT_PORT = 9099;", `const DEFAULT_PORT = ${port};`),
+    (await readFile(backgroundPath, "utf8"))
+      .replace("const DEFAULT_PORT = 9099;", `const DEFAULT_PORT = ${port};`)
+      .replace('kualiPairingToken: "",', `kualiPairingToken: ${JSON.stringify(pairingToken)},`),
   );
   await writeFile(
     popupPath,
-    (await readFile(popupPath, "utf8")).replace("{ kualiPort: 9099 }", `{ kualiPort: ${port} }`),
+    (await readFile(popupPath, "utf8"))
+      .replace("kualiPort: 9099", `kualiPort: ${port}`)
+      .replace('kualiPairingToken: "",', `kualiPairingToken: ${JSON.stringify(pairingToken)},`),
   );
   await writeFile(
     popupHtmlPath,
@@ -224,7 +228,7 @@ async function main() {
     launchStarted = true;
     const executable = await browserPromise;
     temporaryRoot = await mkdtemp(join(tmpdir(), "kuali-meet-e2e-"));
-    const extension = await patchedExtension(ready.port, temporaryRoot);
+    const extension = await patchedExtension(ready.port, ready.pairingToken, temporaryRoot);
     const profile = join(temporaryRoot, "chrome-profile");
     await mkdir(profile, { recursive: true });
     browser = spawn(executable, [

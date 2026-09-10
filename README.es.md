@@ -110,12 +110,10 @@ en el sitio oficial.
 
 ## Inicio rápido
 
-Instala la versión actual para macOS con Homebrew:
-
-```sh
-brew install --cask igarrux/kuali/kuali
-xattr -dr com.apple.quarantine /Applications/Kuali.app
-```
+El flujo de publicación solo distribuye una compilación cuando puede firmarla
+con Developer ID y notarizarla con Apple. Hasta que exista esa versión, compila
+desde el código fuente. No evadas Gatekeeper con `xattr`; si macOS rechaza un
+paquete, repórtalo en vez de quitarle los metadatos de cuarentena.
 
 Para compilar desde el código fuente, instala Rust 1.89+, CMake y un toolchain
 de C/C++. Node.js 22+ solo hace falta para desarrollar y probar la extensión.

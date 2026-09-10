@@ -828,7 +828,11 @@ fn replacement_model_after_deletion(
 
 impl Engine {
     /// Creates the engine and returns the event receiver consumed by the interface.
-    pub fn new(config: KualiConfig) -> (Self, UnboundedReceiver<KualiEvent>) {
+    pub fn new(mut config: KualiConfig) -> (Self, UnboundedReceiver<KualiEvent>) {
+        // Non-desktop consumers and tests may construct a config directly
+        // instead of loading the persisted one through the Tauri entrypoint.
+        config = config.migrated();
+        config.ensure_web_pairing_token();
         let (events, rx) = mpsc::unbounded_channel();
         let (discord_voice_tx, discord_voice_rx) = mpsc::unbounded_channel();
         let (web_voice_tx, web_voice_rx) = mpsc::unbounded_channel();
@@ -996,10 +1000,11 @@ impl Engine {
             listening: true,
         });
         let events = self.inner.web_voice_tx.clone();
+        let pairing_token = config.pairing_token;
         let inner = Arc::clone(&self.inner);
         *running = Some(tokio::spawn(async move {
             tracing::info!("listening for web meetings on ws://{addr}/ingest");
-            kuali_meet::ingest::serve_on(listener, events).await;
+            kuali_meet::ingest::serve_on(listener, events, pairing_token).await;
             inner.web_ingest_ready.store(false, Ordering::Release);
             inner.emit(KualiEvent::WebMeetingsStatusChanged {
                 enabled: true,
@@ -1097,7 +1102,9 @@ impl Engine {
     }
 
     /// Saves configuration and reconnects when required by changed settings.
-    pub async fn update_config(&self, config: KualiConfig) -> Result<(), EngineError> {
+    pub async fn update_config(&self, mut config: KualiConfig) -> Result<(), EngineError> {
+        config = config.migrated();
+        config.ensure_web_pairing_token();
         validate_webhook_config(&config)?;
         let previous = self.config();
         let previous_models = previous.whisper.resolved_models_directory();

@@ -289,14 +289,14 @@
 
       <section class="section" id="install">
         <div class="container install-panel" data-reveal>
-          <div><span class="eyebrow">Install Kuali</span><h2>Two commands.<br>No mystery.</h2></div>
+          <div><span class="eyebrow">Install Kuali</span><h2>Signed first.<br>No exceptions.</h2></div>
           <div>
             <div class="terminal">
               <div class="terminal-head"><span>Terminal · macOS</span><button class="copy-button" type="button" data-copy-target="install-command" data-copied-label="Copied" data-error-label="Select and copy">Copy</button></div>
-              <pre id="install-command"><span class="prompt">$ </span>brew install --cask igarrux/kuali/kuali
-<span class="prompt">$ </span>xattr -dr com.apple.quarantine /Applications/Kuali.app</pre>
+              <pre id="install-command"><span class="prompt">$ </span>git clone https://github.com/igarrux/kuali.git
+<span class="prompt">$ </span>cd kuali &amp;&amp; cargo run -p kuali-app</pre>
             </div>
-            <p class="terminal-note">Review both commands before running them. Requires macOS 11 or newer on Apple Silicon.</p>
+            <p class="terminal-note">Use this development build until a Developer ID-signed and Apple-notarized release is available. Never bypass Gatekeeper. Requires macOS 11 or newer on Apple Silicon.</p>
           </div>
         </div>
       </section>

@@ -55,6 +55,8 @@ async fn main() {
     let path = args.get(1).expect("missing WAV file path");
     let name = args.get(2).cloned().unwrap_or_else(|| "Ana".to_string());
     let port: u16 = args.get(3).and_then(|p| p.parse().ok()).unwrap_or(9099);
+    let pairing_token = std::env::var("KUALI_PAIRING_TOKEN")
+        .expect("set KUALI_PAIRING_TOKEN to the code shown by Kuali");
 
     let samples = read_wav_f32(path);
     println!(
@@ -63,7 +65,7 @@ async fn main() {
     );
 
     let url = format!(
-        "ws://127.0.0.1:{port}/ingest?platform=google_meet&native_meeting_id=prueba-kuali&api_key=x&language=es"
+        "ws://127.0.0.1:{port}/ingest?platform=google_meet&native_meeting_id=prueba-kuali&api_key=x&language=es&pairing_token={pairing_token}"
     );
     let stream = TcpStream::connect(("127.0.0.1", port))
         .await

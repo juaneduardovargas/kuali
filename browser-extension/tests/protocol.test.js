@@ -17,7 +17,10 @@ test("audio frames match capture.v1 little-endian layout", () => {
 });
 
 test("the health handshake only accepts Kuali on the configured loopback port", () => {
-  assert.equal(healthUrl(9099), "ws://127.0.0.1:9099/health?client=kuali-extension");
+  assert.equal(
+    healthUrl(9099, "secret"),
+    "ws://127.0.0.1:9099/health?client=kuali-extension&pairing_token=secret",
+  );
   assert.equal(isKualiHealthMessage(JSON.stringify({
     type: "health",
     service: "kuali",
@@ -25,7 +28,7 @@ test("the health handshake only accepts Kuali on the configured loopback port", 
     protocol: "capture.v1",
   })), true);
   assert.equal(isKualiHealthMessage('{"type":"ready"}'), false);
-  assert.throws(() => healthUrl(0), RangeError);
+  assert.throws(() => healthUrl(0, "secret"), RangeError);
 });
 
 test("participant metadata stays on the same meeting-event contract", () => {

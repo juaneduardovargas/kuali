@@ -79,8 +79,12 @@ function render(state) {
 
 chrome.tabs.query({ active: true, currentWindow: true }).then(async ([tab]) => {
   tabId = tab?.id;
-  const stored = await chrome.storage.local.get({ kualiPort: 9099 });
+  const stored = await chrome.storage.local.get({
+    kualiPort: 9099,
+    kualiPairingToken: "",
+  });
   $("port").value = stored.kualiPort;
+  $("pairing-token").value = stored.kualiPairingToken;
   if (tabId == null) return render(null);
   chrome.runtime.sendMessage({ type: "capture-state", tabId }, render);
 });
@@ -109,4 +113,12 @@ $("port").addEventListener("change", async () => {
     kualiAvailable = null;
     if (tabId != null) chrome.runtime.sendMessage({ type: "capture-state", tabId }, render);
   }
+});
+
+$("pairing-token").addEventListener("change", async () => {
+  await chrome.storage.local.set({
+    kualiPairingToken: $("pairing-token").value.trim(),
+  });
+  kualiAvailable = null;
+  if (tabId != null) chrome.runtime.sendMessage({ type: "capture-state", tabId }, render);
 });

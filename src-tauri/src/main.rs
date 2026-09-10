@@ -143,10 +143,21 @@ fn main() {
         tracing::error!(error = %e, "no se pudieron crear los directorios de Kuali");
     }
 
-    let config = kuali_core::paths::load_config().unwrap_or_else(|e| {
-        tracing::warn!(error = %e, "configuration is unreadable; starting with defaults");
-        Default::default()
-    });
+    let (mut config, config_was_readable) = match kuali_core::paths::load_config() {
+        Ok(config) => (config, true),
+        Err(error) => {
+            tracing::warn!(%error, "configuration is unreadable; starting with defaults");
+            (Default::default(), false)
+        }
+    };
+    // A local-only port still needs authentication: otherwise any unrelated
+    // process or browser extension on this Mac could submit meeting audio.
+    // Persist successful migrations, but never overwrite an unreadable config.
+    if config.ensure_web_pairing_token() && config_was_readable {
+        if let Err(error) = kuali_core::paths::save_config(&config) {
+            tracing::warn!(%error, "no se pudo guardar el código de emparejamiento");
+        }
+    }
     let auto_connect = config.is_ready();
     let (engine, mut events) = Engine::new(config);
 

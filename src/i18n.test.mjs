@@ -52,7 +52,8 @@ test("summaries and tasks have an explicit privacy switch", () => {
   const html = readFileSync(new URL("./index.html", import.meta.url), "utf8");
   const app = readFileSync(new URL("./app.js", import.meta.url), "utf8");
   assert.match(html, /id="cfg-summarize"/);
-  assert.match(html, /id="cfg-summarize"[^>]*checked/);
+  assert.doesNotMatch(html, /id="cfg-summarize"[^>]*checked/);
+  assert.match(app, /c\.llm\["summarize-on-leave"\] === true/);
   assert.match(html, /ninguna transcripción se envía a un LLM/);
   assert.match(app, /btn-resummarize"\)\.hidden = live \|\| !summariesEnabled\(\)/);
 });

@@ -12,7 +12,7 @@ const HEALTH_TIMEOUT_MS = 900;
 const HEALTH_CACHE_MS = 3_000;
 const MEETING_END_GRACE_MS = 3_500;
 const sessions = new Map();
-let healthCache = { port: null, checkedAt: 0, available: false, pending: null };
+let healthCache = { key: null, checkedAt: 0, available: false, pending: null };
 const translated = (key, fallback, substitutions) => (
   chrome.i18n?.getMessage(key, substitutions) || fallback
 );
@@ -203,17 +203,24 @@ function publish(tabId) {
   }).catch(() => {});
 }
 
-async function port() {
-  const stored = await chrome.storage.local.get({ kualiPort: DEFAULT_PORT });
+async function connectionSettings() {
+  const stored = await chrome.storage.local.get({
+    kualiPort: DEFAULT_PORT,
+    kualiPairingToken: "",
+  });
   const value = Number(stored.kualiPort);
-  return Number.isInteger(value) && value > 0 && value <= 65535 ? value : DEFAULT_PORT;
+  return {
+    port: Number.isInteger(value) && value > 0 && value <= 65535 ? value : DEFAULT_PORT,
+    pairingToken: String(stored.kualiPairingToken || "").trim(),
+  };
 }
 
 async function kualiAvailable() {
-  const wsPort = await port();
+  const { port: wsPort, pairingToken } = await connectionSettings();
+  const cacheKey = `${wsPort}:${pairingToken}`;
   const now = Date.now();
-  if (healthCache.port === wsPort && healthCache.pending) return healthCache.pending;
-  if (healthCache.port === wsPort && now - healthCache.checkedAt < HEALTH_CACHE_MS) {
+  if (healthCache.key === cacheKey && healthCache.pending) return healthCache.pending;
+  if (healthCache.key === cacheKey && now - healthCache.checkedAt < HEALTH_CACHE_MS) {
     return healthCache.available;
   }
 
@@ -225,7 +232,7 @@ async function kualiAvailable() {
       settled = true;
       clearTimeout(timer);
       healthCache = {
-        port: wsPort,
+        key: cacheKey,
         checkedAt: Date.now(),
         available,
         pending: null,
@@ -235,7 +242,7 @@ async function kualiAvailable() {
     };
     const timer = setTimeout(() => finish(false), HEALTH_TIMEOUT_MS);
     try {
-      socket = new WebSocket(healthUrl(wsPort));
+      socket = new WebSocket(healthUrl(wsPort, pairingToken));
       socket.onmessage = (event) => finish(isKualiHealthMessage(event.data));
       socket.onerror = () => finish(false);
       socket.onclose = () => finish(false);
@@ -243,7 +250,7 @@ async function kualiAvailable() {
       finish(false);
     }
   });
-  healthCache = { port: wsPort, checkedAt: 0, available: false, pending };
+  healthCache = { key: cacheKey, checkedAt: 0, available: false, pending };
   return pending;
 }
 
@@ -271,12 +278,13 @@ async function start(tabId) {
   state.status = "connecting";
   publish(tabId);
 
-  const wsPort = await port();
+  const { port: wsPort, pairingToken } = await connectionSettings();
   const query = new URLSearchParams({
     platform: state.info.platform,
     native_meeting_id: state.info.meetingId || state.info.title || translated("meetingFallbackName", "Meeting"),
     client: "kuali-extension",
     protocol: "capture.v1+participants",
+    pairing_token: pairingToken,
   });
   const socket = new WebSocket(`ws://127.0.0.1:${wsPort}/ingest?${query}`);
   state.socket = socket;

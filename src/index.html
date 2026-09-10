@@ -712,7 +712,8 @@
                     <div>
                       <span class="eyebrow">Prueba rápida</span>
                       <h4 id="meet-step-3-title">Comprueba que Kuali está disponible</h4>
-                      <p>Mantén abierta la aplicación, entra a una reunión y pulsa el icono de Kuali. La extensión debe indicar que la app está conectada y permitirte grabar.</p>
+                      <p>Copia este código en la extensión. Después mantén abierta la aplicación, entra a una reunión y pulsa el icono de Kuali.</p>
+                      <div class="copy-path"><code id="guide-meet-pairing-token">—</code><button type="button" class="ghost" id="btn-copy-guide-meet-token">Copiar código</button></div>
                       <p class="guide-success-note">El puerto predeterminado es <code>9099</code>. Solo necesitas tocarlo si lo cambiaste en Ajustes → Integraciones.</p>
                     </div>
                   </section>
@@ -1215,7 +1216,7 @@
               </div>
 
               <label class="feature-toggle summary-feature-toggle">
-                <input type="checkbox" id="cfg-summarize" name="summarize-on-leave" checked />
+                <input type="checkbox" id="cfg-summarize" name="summarize-on-leave" />
                 <span class="feature-toggle-copy">
                   <strong>Resúmenes y tareas</strong>
                   <small>Al activarlo, Kuali usa el proveedor configurado cuando termina una reunión. Si está apagado, ninguna transcripción se envía a un LLM.</small>
@@ -1380,6 +1381,22 @@
                     inputmode="numeric"
                   />
                   <small>Debe ser el mismo puerto configurado en la extensión. Por defecto: 9099.</small>
+                </label>
+
+                <label class="field compact-field">
+                  <span>Código de emparejamiento</span>
+                  <div class="secret-entry web-pairing-entry">
+                    <input
+                      type="password"
+                      id="cfg-web-pairing-token"
+                      name="web-meetings-pairing-token"
+                      readonly
+                      autocomplete="off"
+                      spellcheck="false"
+                    />
+                    <button type="button" class="ghost" id="btn-copy-web-pairing-token">Copiar</button>
+                  </div>
+                  <small>Cópialo una vez en la extensión. Impide que otros procesos locales envíen audio a Kuali.</small>
                 </label>
               </div>
 

@@ -195,7 +195,7 @@ function isLiveMeeting(id) {
 }
 
 function summariesEnabled(config = state.config) {
-  return config?.llm?.["summarize-on-leave"] !== false;
+  return config?.llm?.["summarize-on-leave"] === true;
 }
 
 function talkingFor(meetingId) {
@@ -4717,6 +4717,8 @@ async function renderGuide() {
     }
   }
   $("extension-path").textContent = state.extensionPath || t("No se encontró la carpeta");
+  $("guide-meet-pairing-token").textContent =
+    state.config?.meet?.["pairing-token"] ?? "—";
   $("btn-copy-extension-path").disabled = !state.extensionPath;
   $("btn-reveal-extension").disabled = !state.extensionPath;
 }
@@ -5177,6 +5179,7 @@ async function openSettings() {
   renderDiscordSettingsAccess();
   $("cfg-web-enabled").checked = c.meet?.enabled !== false;
   $("cfg-web-port").value = c.meet?.port ?? 9099;
+  $("cfg-web-pairing-token").value = c.meet?.["pairing-token"] ?? "";
   $("cfg-web-port").disabled = !$("cfg-web-enabled").checked;
   renderWebListenerStatus();
 
@@ -5200,7 +5203,7 @@ async function openSettings() {
   // An empty field is the automatic setting: the summary follows the meeting.
   const outputLanguage = (c.llm["output-language"] ?? "").trim();
   $("cfg-output-language").value = outputLanguage.toLowerCase() === "auto" ? "" : outputLanguage;
-  $("cfg-summarize").checked = c.llm["summarize-on-leave"] !== false;
+  $("cfg-summarize").checked = c.llm["summarize-on-leave"] === true;
   $("cfg-display-names").value = (c.application?.["display-names"] ?? []).join(", ");
   updateSummarySettingsVisibility();
   $("cfg-ui-language").value = c.application?.language ?? "auto";
@@ -6093,6 +6096,7 @@ async function saveSettings() {
   c.llm["model-override"] = null;
   c.llm["output-language"] = $("cfg-output-language").value.trim() || "auto";
   c.llm["summarize-on-leave"] = $("cfg-summarize").checked;
+  c.llm["summary-consent-version"] = 1;
   c.application["display-names"] = $("cfg-display-names")
     .value.split(",")
     .map((name) => name.trim())
@@ -6653,6 +6657,10 @@ function wireUp() {
   }
   $("btn-copy-extension-path").addEventListener("click", () =>
     copyText(state.extensionPath, "Ruta"));
+  $("btn-copy-guide-meet-token").addEventListener("click", () =>
+    copyText(state.config?.meet?.["pairing-token"] ?? "", t("Clave")));
+  $("btn-copy-web-pairing-token").addEventListener("click", () =>
+    copyText($("cfg-web-pairing-token").value, t("Clave")));
   $("btn-reveal-extension").addEventListener("click", () =>
     invoke("reveal_browser_extension").catch((error) => toast(String(error), "extensión", true)));
   $("btn-settings-open-guide").addEventListener("click", () => {

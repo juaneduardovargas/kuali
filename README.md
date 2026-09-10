@@ -103,12 +103,10 @@ workflows on the official website.
 
 ## Quick start
 
-Install the current macOS release with Homebrew:
-
-```sh
-brew install --cask igarrux/kuali/kuali
-xattr -dr com.apple.quarantine /Applications/Kuali.app
-```
+The release workflow publishes only when it can Developer ID sign and notarize
+the macOS build. Until such a release is available, build from source. Do not
+bypass Gatekeeper with `xattr`; if macOS rejects a package, report it instead of
+removing its quarantine metadata.
 
 To build from source, install Rust 1.89+, CMake, and a C/C++ toolchain. Node.js
 22+ is needed only for extension development and tests.

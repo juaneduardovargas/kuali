@@ -126,7 +126,8 @@ pub fn save_config(config: &KualiConfig) -> Result<(), ConfigError> {
     Ok(())
 }
 
-/// The file contains the bot token and must remain owner-readable only.
+/// The file contains local secrets, including bot and browser-pairing tokens,
+/// and must remain owner-readable only.
 #[cfg(unix)]
 fn restrict_permissions(path: &Path) -> Result<(), ConfigError> {
     use std::os::unix::fs::PermissionsExt;

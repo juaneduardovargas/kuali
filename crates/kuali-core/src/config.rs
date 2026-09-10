@@ -61,13 +61,19 @@ impl Default for ApplicationConfig {
 ///
 /// Kuali does not join the meeting. A browser extension captures participant
 /// audio in the existing tab and sends it over a local WebSocket.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct WebMeetingsConfig {
     /// Whether Kuali listens for incoming browser-meeting audio.
     pub enabled: bool,
     /// **Loopback-only** listening port, matching the extension default.
     pub port: u16,
+    /// Per-installation secret required by the browser extension.
+    ///
+    /// Loopback prevents access from another computer, but not from an
+    /// unrelated local process or extension. This token pairs the two Kuali
+    /// components without granting ordinary websites access to meeting ingest.
+    pub pairing_token: String,
 }
 
 impl Default for WebMeetingsConfig {
@@ -75,6 +81,9 @@ impl Default for WebMeetingsConfig {
         Self {
             enabled: true,
             port: 9099,
+            // Generated and persisted by the desktop entrypoint. Keeping the
+            // structural default empty makes old config files detectable.
+            pairing_token: String::new(),
         }
     }
 }
@@ -509,6 +518,13 @@ pub struct LlmConfig {
     /// Allow meeting transcripts to be processed by the configured LLM.
     /// When disabled, automatic and manual summaries are both blocked.
     pub summarize_on_leave: bool,
+    /// Records that the user has seen the opt-in summary behavior.
+    ///
+    /// This is serialized so installations upgrading from the former
+    /// opt-out default can be disabled exactly once without undoing a later,
+    /// explicit choice to enable summaries.
+    #[serde(default)]
+    pub summary_consent_version: u8,
     /// Whether questions about past meetings are available at all.
     ///
     /// Off until the person turns it on, because answering well requires a
@@ -526,7 +542,10 @@ impl Default for LlmConfig {
             model_override: None,
             providers: BTreeMap::new(),
             output_language: "auto".to_string(),
-            summarize_on_leave: true,
+            // Sending a transcript to a configured CLI or remote provider must
+            // be an explicit choice, never a first-run side effect.
+            summarize_on_leave: false,
+            summary_consent_version: 1,
             meeting_questions: false,
         }
     }
@@ -630,12 +649,26 @@ impl KualiConfig {
     /// Idempotently migrates a configuration immediately after loading it.
     pub fn migrated(mut self) -> Self {
         self.llm.migrate_model_override();
+        if self.llm.summary_consent_version < 1 {
+            self.llm.summarize_on_leave = false;
+            self.llm.summary_consent_version = 1;
+        }
         if self.whisper.model == WhisperModel::LargeV3 {
             self.whisper.model = WhisperModel::LargeV3Q8;
         } else if !self.whisper.model.is_selectable() {
             self.whisper.model = WhisperConfig::default().model;
         }
         self
+    }
+
+    /// Creates the browser-extension pairing secret when loading a config that
+    /// predates it. Returns whether callers should persist the migrated config.
+    pub fn ensure_web_pairing_token(&mut self) -> bool {
+        if !self.meet.pairing_token.trim().is_empty() {
+            return false;
+        }
+        self.meet.pairing_token = uuid::Uuid::new_v4().simple().to_string();
+        true
     }
 
     /// Requirements still missing before Kuali can operate.
@@ -700,7 +733,7 @@ mod tests {
         let cfg = KualiConfig::default();
         assert_eq!(cfg.application.language, "auto");
         assert!(cfg.application.automatic_updates);
-        assert!(cfg.llm.summarize_on_leave);
+        assert!(!cfg.llm.summarize_on_leave);
         assert_eq!(cfg.whisper.model, WhisperModel::LargeV3TurboQ5);
         assert!(!cfg.is_ready());
         assert_eq!(
@@ -747,7 +780,36 @@ mod tests {
         .expect("deserialize config written before UI languages existed");
         assert_eq!(old.application.language, "auto");
         assert!(old.application.automatic_updates);
-        assert!(old.llm.summarize_on_leave);
+        assert!(!old.llm.summarize_on_leave);
+        assert!(old.meet.pairing_token.is_empty());
+    }
+
+    #[test]
+    fn browser_pairing_token_is_generated_once() {
+        let mut cfg = KualiConfig::default();
+        assert!(cfg.ensure_web_pairing_token());
+        assert_eq!(cfg.meet.pairing_token.len(), 32);
+        assert!(cfg
+            .meet
+            .pairing_token
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit()));
+        let token = cfg.meet.pairing_token.clone();
+        assert!(!cfg.ensure_web_pairing_token());
+        assert_eq!(cfg.meet.pairing_token, token);
+    }
+
+    #[test]
+    fn legacy_automatic_summaries_are_disabled_exactly_once() {
+        let legacy = toml::from_str::<KualiConfig>("[llm]\nsummarize-on-leave = true\n")
+            .expect("deserialize the former opt-out default")
+            .migrated();
+        assert!(!legacy.llm.summarize_on_leave);
+        assert_eq!(legacy.llm.summary_consent_version, 1);
+
+        let mut explicitly_enabled = legacy;
+        explicitly_enabled.llm.summarize_on_leave = true;
+        assert!(explicitly_enabled.migrated().llm.summarize_on_leave);
     }
 
     #[test]

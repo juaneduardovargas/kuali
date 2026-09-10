@@ -3367,6 +3367,15 @@ p > .icon,
   width: 120px;
 }
 
+.web-meetings-settings .web-pairing-entry input {
+  width: auto;
+  font-family: var(--mono);
+}
+
+.web-pairing-entry button {
+  min-height: 34px;
+}
+
 .webhook-contract > div {
   display: flex;
   align-items: baseline;

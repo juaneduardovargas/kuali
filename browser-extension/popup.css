@@ -121,6 +121,26 @@ a:focus-visible {
   font-variant-numeric: tabular-nums;
 }
 
+.pairing-field {
+  display: grid;
+  gap: 5px;
+  margin-top: 13px;
+  color: #8db9b2;
+  font-size: 12px;
+}
+
+.pairing-field input {
+  width: 100%;
+  padding: 7px 8px;
+  border: 1px solid #24534d;
+  border-radius: 7px;
+  color: #c4ddd8;
+  background: #0d2623;
+  font: 12px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.pairing-field small { color: #6f9f98; font-size: 11px; }
+
 .error { margin: 13px 0 0; color: #fecaca; font-size: 12px; overflow-wrap: anywhere; }
 
 @media (prefers-reduced-motion: reduce) {

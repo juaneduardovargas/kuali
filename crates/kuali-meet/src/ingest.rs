@@ -5,19 +5,21 @@
 //! ID, name, and avatar.
 //!
 //! It listens on **loopback only** and rejects ordinary web origins. Browser
-//! connections must come from a Chrome extension, while native clients without
-//! an `Origin` header remain available for local tooling.
+//! connections must come from a Chrome extension. Native diagnostics may omit
+//! `Origin`, but every client must present the per-installation pairing token.
 
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use futures_util::{SinkExt, StreamExt};
 use kuali_core::{color_for, CallInfo, DiscordUserId, Speaker, VoiceEvent};
+use subtle::ConstantTimeEq;
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::mpsc::UnboundedSender;
-use tokio_tungstenite::tungstenite::{http::StatusCode, Message};
+use tokio::sync::{mpsc::UnboundedSender, Semaphore};
+use tokio_tungstenite::tungstenite::{http::StatusCode, protocol::WebSocketConfig, Message};
 
 use crate::wire::{
     decode_binary, decode_text, AudioFrame, Frame, MeetingEvent, CAPTURE_SAMPLE_RATE,
@@ -34,6 +36,14 @@ const TICK_MS: u64 = 20;
 /// the operating system does not promptly close the socket, this deadline still
 /// finalizes the meeting instead of leaving Kuali listening forever.
 const CLIENT_LIVENESS_TIMEOUT: Duration = Duration::from_secs(50);
+const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
+/// A normal 20 ms PCM packet is about 1.3 KiB. This leaves ample room for a
+/// large roster while preventing one authenticated-but-buggy client from
+/// allocating Tungstenite's 64 MiB default message buffer.
+const MAX_MESSAGE_BYTES: usize = 256 * 1024;
+/// Browser sessions are intentionally bounded so repeated connection attempts
+/// cannot create unbounded tasks and channels in the desktop process.
+const MAX_CONNECTIONS: usize = 8;
 
 fn client_is_stale(last_activity: Instant, now: Instant) -> bool {
     now.saturating_duration_since(last_activity) >= CLIENT_LIVENESS_TIMEOUT
@@ -60,27 +70,43 @@ pub enum IngestError {
 pub async fn serve(
     addr: SocketAddr,
     events: UnboundedSender<VoiceEvent>,
+    pairing_token: String,
 ) -> Result<(), IngestError> {
     let listener = TcpListener::bind(addr)
         .await
         .map_err(|source| IngestError::Bind { addr, source })?;
     tracing::info!("listening for web meetings on ws://{addr}/ingest");
-    serve_on(listener, events).await;
+    serve_on(listener, events, pairing_token).await;
     Ok(())
 }
 
 /// Serves an already-bound listener. Separation from `serve` lets tests reserve
 /// a port instead of guessing which one is free.
-pub async fn serve_on(listener: TcpListener, events: UnboundedSender<VoiceEvent>) {
+pub async fn serve_on(
+    listener: TcpListener,
+    events: UnboundedSender<VoiceEvent>,
+    pairing_token: String,
+) {
+    let pairing_token: Arc<str> = pairing_token.into();
+    let connection_slots = Arc::new(Semaphore::new(MAX_CONNECTIONS));
     // Each connection runs in its own task and wraps events with a session ID,
     // preserving independent clocks and segmenters across tabs.
     while let Ok((stream, _)) = listener.accept().await {
         if events.is_closed() {
             break;
         }
+        let Ok(connection_slot) = Arc::clone(&connection_slots).try_acquire_owned() else {
+            tracing::warn!(
+                limit = MAX_CONNECTIONS,
+                "web meeting connection limit reached"
+            );
+            continue;
+        };
         let events = events.clone();
+        let pairing_token = Arc::clone(&pairing_token);
         tokio::spawn(async move {
-            match handle_connection(stream, &events).await {
+            let _connection_slot = connection_slot;
+            match handle_connection(stream, &events, &pairing_token).await {
                 Ok(()) => tracing::info!("web meeting ended"),
                 // Ordinary HTTP traffic on this port is not a Kuali failure;
                 // record it at debug level and continue.
@@ -95,21 +121,41 @@ pub async fn serve_on(listener: TcpListener, events: UnboundedSender<VoiceEvent>
 async fn handle_connection(
     stream: TcpStream,
     events: &UnboundedSender<VoiceEvent>,
+    pairing_token: &str,
 ) -> Result<(), tokio_tungstenite::tungstenite::Error> {
     // The path carries meeting data: `?platform=…&native_meeting_id=…`.
     let mut request_path = String::new();
-    let ws = tokio_tungstenite::accept_hdr_async(stream, |req: &Request, res: Response| {
-        if !origin_is_allowed(req) {
-            let mut response = ErrorResponse::new(Some(
-                "Kuali only accepts its browser extension on this port".into(),
-            ));
-            *response.status_mut() = StatusCode::FORBIDDEN;
-            return Err(response);
-        }
-        request_path = req.uri().to_string();
-        Ok(res)
-    })
-    .await?;
+    let websocket_config = WebSocketConfig::default()
+        .read_buffer_size(16 * 1024)
+        .write_buffer_size(16 * 1024)
+        .max_write_buffer_size(MAX_MESSAGE_BYTES)
+        .max_message_size(Some(MAX_MESSAGE_BYTES))
+        .max_frame_size(Some(MAX_MESSAGE_BYTES));
+    let ws = tokio::time::timeout(
+        HANDSHAKE_TIMEOUT,
+        tokio_tungstenite::accept_hdr_async_with_config(
+            stream,
+            |req: &Request, res: Response| {
+                if !origin_is_allowed(req) || !pairing_token_is_valid(req, pairing_token) {
+                    let mut response = ErrorResponse::new(Some(
+                        "Kuali requires an authorized, paired browser extension".into(),
+                    ));
+                    *response.status_mut() = StatusCode::FORBIDDEN;
+                    return Err(response);
+                }
+                request_path = req.uri().to_string();
+                Ok(res)
+            },
+            Some(websocket_config),
+        ),
+    )
+    .await
+    .map_err(|_| {
+        tokio_tungstenite::tungstenite::Error::Io(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "web meeting handshake timed out",
+        ))
+    })??;
 
     let meeting = MeetingParams::from_uri(&request_path);
     let (mut sink, mut source) = ws.split();
@@ -281,6 +327,26 @@ fn origin_is_allowed(request: &Request) -> bool {
         && extension_id
             .bytes()
             .all(|byte| (b'a'..=b'p').contains(&byte))
+}
+
+/// Validates the per-installation secret without returning early on the first
+/// different byte. Token length is fixed, so rejecting another length reveals
+/// no useful information and avoids accepting truncated values.
+fn pairing_token_is_valid(request: &Request, expected: &str) -> bool {
+    let supplied = request
+        .uri()
+        .query()
+        .and_then(|query| {
+            query.split('&').find_map(|pair| {
+                let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+                (key == "pairing_token").then(|| percent_decode(value))
+            })
+        })
+        .unwrap_or_default();
+    if expected.is_empty() || supplied.len() != expected.len() {
+        return false;
+    }
+    bool::from(supplied.as_bytes().ct_eq(expected.as_bytes()))
 }
 
 fn on_binary(bytes: &[u8], session: &mut Session, events: &UnboundedSender<VoiceEvent>) {
@@ -931,6 +997,8 @@ mod tests {
     use tokio::sync::mpsc;
     use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 
+    const TEST_PAIRING_TOKEN: &str = "0123456789abcdef0123456789abcdef";
+
     fn test_session() -> Session {
         Session::new(MeetingParams {
             platform: "google_meet".into(),
@@ -1023,6 +1091,24 @@ mod tests {
     }
 
     #[test]
+    fn every_client_needs_the_installation_pairing_token() {
+        let valid = Request::builder()
+            .uri(format!("/health?pairing_token={TEST_PAIRING_TOKEN}"))
+            .body(())
+            .unwrap();
+        assert!(pairing_token_is_valid(&valid, TEST_PAIRING_TOKEN));
+
+        for uri in [
+            "/health",
+            "/health?pairing_token=wrong",
+            "/health?pairing_token=0123456789abcdef0123456789abcdee",
+        ] {
+            let request = Request::builder().uri(uri).body(()).unwrap();
+            assert!(!pairing_token_is_valid(&request, TEST_PAIRING_TOKEN));
+        }
+    }
+
+    #[test]
     fn meet_speaker_ids_never_collide_with_discord_ones() {
         // Discord snowflakes are shifted timestamps far outside this ID range.
         assert!(test_speaker_id(0) > 543_321_203_243_483_137);
@@ -1110,10 +1196,10 @@ mod tests {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
         let port = listener.local_addr().unwrap().port();
-        tokio::spawn(serve_on(listener, tx));
+        tokio::spawn(serve_on(listener, tx, TEST_PAIRING_TOKEN.into()));
 
         let url = format!(
-            "ws://127.0.0.1:{port}/ingest?platform=google_meet&native_meeting_id=abc-defg-hij&api_key=x&language=es"
+            "ws://127.0.0.1:{port}/ingest?platform=google_meet&native_meeting_id=abc-defg-hij&api_key=x&language=es&pairing_token={TEST_PAIRING_TOKEN}"
         );
         let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
         let (mut ws, _) = tokio_tungstenite::client_async(&url, stream).await.unwrap();
@@ -1197,9 +1283,11 @@ mod tests {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
         let port = listener.local_addr().unwrap().port();
-        tokio::spawn(serve_on(listener, tx));
+        tokio::spawn(serve_on(listener, tx, TEST_PAIRING_TOKEN.into()));
 
-        let url = format!("ws://127.0.0.1:{port}/health?client=kuali-extension");
+        let url = format!(
+            "ws://127.0.0.1:{port}/health?client=kuali-extension&pairing_token={TEST_PAIRING_TOKEN}"
+        );
         let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
         let mut request = url.into_client_request().unwrap();
         request.headers_mut().insert(
@@ -1230,14 +1318,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_wrong_pairing_token_is_rejected_before_creating_a_meeting() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(serve_on(listener, tx, TEST_PAIRING_TOKEN.into()));
+
+        let url = format!("ws://127.0.0.1:{port}/health?pairing_token=wrong");
+        let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
+        let result = tokio_tungstenite::client_async(&url, stream).await;
+        assert!(result.is_err(), "an invalid token completed the handshake");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), rx.recv())
+                .await
+                .is_err(),
+            "an unauthorized socket emitted a meeting event"
+        );
+    }
+
+    #[tokio::test]
     async fn two_browser_meetings_are_captured_as_independent_sessions() {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
         let port = listener.local_addr().unwrap().port();
-        tokio::spawn(serve_on(listener, tx));
+        tokio::spawn(serve_on(listener, tx, TEST_PAIRING_TOKEN.into()));
 
         let first_url = format!(
-            "ws://127.0.0.1:{port}/ingest?platform=google_meet&native_meeting_id=primera-sala"
+            "ws://127.0.0.1:{port}/ingest?platform=google_meet&native_meeting_id=primera-sala&pairing_token={TEST_PAIRING_TOKEN}"
         );
         let first_stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
         let (mut first, _) = tokio_tungstenite::client_async(&first_url, first_stream)
@@ -1260,7 +1367,7 @@ mod tests {
         ));
 
         let second_url =
-            format!("ws://127.0.0.1:{port}/ingest?platform=zoom&native_meeting_id=segunda-sala");
+            format!("ws://127.0.0.1:{port}/ingest?platform=zoom&native_meeting_id=segunda-sala&pairing_token={TEST_PAIRING_TOKEN}");
         let second_stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
         let (mut second, _) = tokio_tungstenite::client_async(&second_url, second_stream)
             .await

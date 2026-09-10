@@ -24,13 +24,14 @@ La misma ficha funciona en Chrome, Edge, Brave y Arc.
 1. Abre `chrome://extensions` (o `edge://extensions`).
 2. Activa **Modo desarrollador**.
 3. Pulsa **Cargar descomprimida** y elige esta carpeta `browser-extension`.
-4. Abre Kuali, entra a una reunión, pulsa el icono de Kuali y elige
-   **Grabar y transcribir** después de leer el aviso y confirmar que informaste
-   a los participantes.
+4. Copia en el popup el código de **Kuali → Ajustes → Integraciones**.
+5. Entra a una reunión, pulsa el icono de Kuali y elige **Grabar y transcribir**
+   después de leer el aviso y confirmar que informaste a los participantes.
 
-Por defecto sólo conecta con `ws://127.0.0.1:9099`. El popup permite cambiar el
-puerto. El audio viaja en PCM mono a 16 kHz; el ID, nombre, foto y tipo de pista
-del participante viajan por el mismo WebSocket vinculados a su canal.
+Por defecto sólo conecta con `ws://127.0.0.1:9099` y debe presentar el código de
+emparejamiento de esa instalación. El popup permite cambiar el puerto. El audio
+viaja en PCM mono a 16 kHz; el ID, nombre, foto y tipo de pista del participante
+viajan por el mismo WebSocket vinculados a su canal.
 Puedes capturar varias pestañas compatibles al mismo tiempo. Cada una recibe su
 propia sesión y transcripción; la app comparte una sola copia de Whisper entre
 ellas y cualquier llamada activa de Discord.

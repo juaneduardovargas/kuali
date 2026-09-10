@@ -32,6 +32,11 @@
         <span data-i18n="localPort">Local port</span>
         <input id="port" name="kuali-port" type="number" inputmode="numeric" min="1" max="65535" value="9099" autocomplete="off" />
       </label>
+      <label class="pairing-field" for="pairing-token">
+        <span data-i18n="pairingCode">Pairing code</span>
+        <input id="pairing-token" name="kuali-pairing-token" type="password" minlength="32" maxlength="32" pattern="[0-9a-fA-F]{32}" autocomplete="off" spellcheck="false" />
+        <small data-i18n="pairingHint">Copy it from Kuali → Settings → Integrations.</small>
+      </label>
       <p id="error" class="error" role="alert" hidden></p>
     </main>
     <script src="popup.js"></script>

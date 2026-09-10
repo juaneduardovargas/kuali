@@ -25,13 +25,16 @@ The same listing works in Chrome, Edge, Brave, and Arc.
 1. Open `chrome://extensions` (or `edge://extensions`).
 2. Enable **Developer mode**.
 3. Select **Load unpacked** and choose this `browser-extension` directory.
-4. Open Kuali, join a supported meeting, select the Kuali toolbar icon, and
-   review the disclosure. Confirm that participants were informed, then choose
-   **Record and transcribe**.
+4. Copy the pairing code from **Kuali → Settings → Integrations** into the
+   extension popup.
+5. Join a supported meeting, select the Kuali toolbar icon, and review the
+   disclosure. Confirm that participants were informed, then choose **Record
+   and transcribe**.
 
-The extension connects only to `ws://127.0.0.1:9099` by default. The port can
-be changed in the popup. Audio is sent as mono 16 kHz PCM; participant metadata
-is sent on the same WebSocket before or alongside its channel's audio.
+The extension connects only to `ws://127.0.0.1:9099` by default and must present
+the per-installation pairing code. The port can be changed in the popup. Audio
+is sent as mono 16 kHz PCM; participant metadata is sent on the same WebSocket
+before or alongside its channel's audio.
 Multiple supported meeting tabs can capture concurrently. Each tab gets its own
 session and transcript; the desktop app shares one loaded Whisper model between
 them and any active Discord call.

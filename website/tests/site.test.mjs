@@ -139,14 +139,13 @@ test("markup keeps identifiers and image descriptions coherent", () => {
   }
 });
 
-test("installation remains an explicit two-command flow", () => {
-  const install = "brew install --cask igarrux/kuali/kuali";
-  const quarantine = "xattr -dr com.apple.quarantine /Applications/Kuali.app";
+test("installation never bypasses Gatekeeper", () => {
+  const sourceBuild = "git clone https://github.com/igarrux/kuali.git";
   for (const page of installationPages) {
     const html = read(page);
-    assert.ok(html.includes(install), `${page} is missing Homebrew installation`);
-    assert.ok(html.includes(quarantine), `${page} is missing explicit quarantine command`);
-    assert.doesNotMatch(html, /postflight|--no-quarantine|automatically removes the quarantine/i);
+    assert.ok(html.includes(sourceBuild), `${page} is missing the development source build`);
+    assert.doesNotMatch(html, /xattr|postflight|--no-quarantine|automatically removes the quarantine/i);
+    assert.match(html, /Gatekeeper|quarantine metadata|metadatos de cuarentena/i);
   }
 });
 

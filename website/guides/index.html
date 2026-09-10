@@ -50,7 +50,7 @@
           { "@type": "HowToTool", "name": "A Discord account or Chromium-based browser" }
         ],
         "step": [
-          { "@type": "HowToStep", "name": "Install Kuali", "text": "Install the Kuali cask and explicitly remove quarantine after reviewing the command." },
+          { "@type": "HowToStep", "name": "Install Kuali", "text": "Install only a Developer ID-signed and Apple-notarized Kuali release. Never bypass Gatekeeper." },
           { "@type": "HowToStep", "name": "Choose an integration", "text": "Create a Discord bot or load the browser extension included with Kuali." },
           { "@type": "HowToStep", "name": "Download a transcription model", "text": "Open Kuali and download the Whisper model that fits your computer." },
           { "@type": "HowToStep", "name": "Start a meeting", "text": "Join a call and confirm that Kuali shows speaker activity and live transcription." }
@@ -101,13 +101,13 @@
           <section class="guide-section" id="install" data-reveal>
             <span class="eyebrow">01 · Desktop</span>
             <h2>Install Kuali on macOS</h2>
-            <p>The current release supports macOS 11 or newer on Apple Silicon. Homebrew verifies the checksum pinned by Kuali’s tap before installing the application.</p>
+            <p>Kuali supports macOS 11 or newer on Apple Silicon. Install only a release that macOS accepts normally after verifying its Developer ID signature and Apple notarization. Until one is available, use a development build from source.</p>
             <div class="terminal">
               <div class="terminal-head"><span>Terminal · macOS</span><button class="copy-button" type="button" data-copy-target="guide-install-command" data-copied-label="Copied" data-error-label="Select and copy">Copy</button></div>
-              <pre id="guide-install-command"><span class="prompt">$ </span>brew install --cask igarrux/kuali/kuali
-<span class="prompt">$ </span>xattr -dr com.apple.quarantine /Applications/Kuali.app</pre>
+              <pre id="guide-install-command"><span class="prompt">$ </span>git clone https://github.com/igarrux/kuali.git
+<span class="prompt">$ </span>cd kuali &amp;&amp; cargo run -p kuali-app</pre>
             </div>
-            <p>Open Kuali from Applications. On first launch, the app opens its guided setup automatically. You can return to it later from the Guide button.</p>
+            <p>Never remove quarantine metadata to make a rejected package run. On first launch, the app opens its guided setup automatically. You can return to it later from the Guide button.</p>
           </section>
 
           <section class="guide-section" id="model" data-reveal>

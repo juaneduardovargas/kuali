@@ -286,6 +286,10 @@ async fn main() -> Result<()> {
     // integrations. It only reads the user's selected Whisper configuration.
     config.meet.enabled = true;
     config.meet.port = internal_port;
+    // Never print the person's persisted pairing secret into E2E logs. This
+    // disposable browser and receiver get a fresh secret for this run.
+    config.meet.pairing_token = uuid::Uuid::new_v4().simple().to_string();
+    let pairing_token = config.meet.pairing_token.clone();
     config.llm.summarize_on_leave = false;
     config.discord.post_summary_to_channel = false;
     config.integrations.webhooks.clear();
@@ -304,6 +308,7 @@ async fn main() -> Result<()> {
 
     let ready = serde_json::json!({
         "port": external_port,
+        "pairingToken": pairing_token,
         "mode": if options.full { "full" } else { "solo" },
         "model": model.file_name(),
     });

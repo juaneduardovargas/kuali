@@ -563,6 +563,12 @@ export const ENGLISH_TRANSLATIONS = Object.freeze({
   "Puerto local de la extensión": "Extension local port",
   "Debe ser el mismo puerto configurado en la extensión. Por defecto: 9099.":
     "It must match the port configured in the extension. Default: 9099.",
+  "Código de emparejamiento": "Pairing code",
+  "Cópialo una vez en la extensión. Impide que otros procesos locales envíen audio a Kuali.":
+    "Copy it into the extension once. It prevents other local processes from sending audio to Kuali.",
+  "Copia este código en la extensión. Después mantén abierta la aplicación, entra a una reunión y pulsa el icono de Kuali.":
+    "Copy this code into the extension. Then keep the app open, join a meeting, and click the Kuali icon.",
+  "Copiar código": "Copy code",
   Evento: "Event",
   "Kuali hace un": "Kuali sends a",
   "después del resumen. Envía la transcripción íntegra con hablantes y tiempos, participantes, puntos clave, decisiones, tareas y preguntas. El audio nunca se envía.":
