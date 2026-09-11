@@ -65,6 +65,15 @@ function createHarness({
       return this.settings;
     }
 
+    clone() {
+      const clone = new FakeTrack(`${this.id}-clone`);
+      clone.label = this.label;
+      clone.enabled = this.enabled;
+      clone.muted = this.muted;
+      clone.settings = { ...this.settings };
+      return clone;
+    }
+
     end() {
       this.readyState = "ended";
       for (const listener of this.listeners.get("ended") || []) listener();
@@ -461,6 +470,9 @@ function createHarness({
       processor.push(new FakeAudioData(now, samples));
     },
     pushTrackFrame,
+    requestPageMicrophone(constraints = { audio: true, video: false }) {
+      return sandbox.navigator.mediaDevices.getUserMedia(constraints);
+    },
     sendControl,
     resolveAudioContextClose() {
       const resolve = audioContextCloseResolvers.shift();
@@ -504,6 +516,7 @@ test("Teams reopens the exact sender device for readable microphone PCM", async 
   const microphone = new harness.FakeTrack("teams-sender-microphone");
   microphone.label = "HD Pro Webcam C920";
   microphone.settings.deviceId = "c920-device";
+  microphone.clone = undefined;
   peer.senders = [{
     track: microphone,
     getParameters: () => ({ encodings: [{ active: true }] }),
@@ -538,6 +551,40 @@ test("Teams reopens the exact sender device for readable microphone PCM", async 
   assert(
     microphoneAudio.pcm.some((sample) => Math.abs(sample - 0.08) < 1e-6),
     "speech present only on the second webcam channel must survive",
+  );
+});
+
+test("Teams clones the microphone stream the page already opened", async () => {
+  const harness = createHarness({
+    topLevel: true,
+    hostname: "teams.microsoft.com",
+  });
+  const pageStream = await harness.requestPageMicrophone();
+  const pageTrack = pageStream.getAudioTracks()[0];
+  pageTrack.label = "HD Pro Webcam C920";
+
+  await harness.controlAndWait("start");
+  assert.equal(harness.microphoneRequestCount, 1, "Kuali must not open the webcam a second time");
+  assert(
+    harness.posts.some((message) => message.type === "meeting-event"
+      && message.kind === "microphone-source"
+      && message.detail?.source === "page-microphone-clone"),
+  );
+  for (let attempt = 0; attempt < 4
+    && !harness.trackProcessors.some((processor) => processor.track.id === `${pageTrack.id}-clone`); attempt += 1) {
+    await harness.flush();
+  }
+  const microphoneProcessor = harness.trackProcessors.find(
+    (processor) => processor.track.id === `${pageTrack.id}-clone`,
+  );
+  assert(microphoneProcessor, "the cloned Teams microphone must use the native track processor");
+  for (let index = 0; index < 8; index += 1) {
+    harness.pushLocalTrackFrame(microphoneProcessor.track);
+    await harness.flush();
+  }
+  assert(
+    harness.posts.some((message) => message.type === "audio" && message.channel === 1000),
+    "the cloned Teams microphone must reach the reserved local channel",
   );
 });
 
@@ -1036,6 +1083,7 @@ test("a cancelled exact-device request never falls through to a second microphon
   const senderTrack = new harness.FakeTrack("meet-microphone");
   senderTrack.label = "Microphone";
   senderTrack.getSettings = () => ({ deviceId: "selected-device" });
+  senderTrack.clone = undefined;
   peer.senders.push({
     track: senderTrack,
     getParameters: () => ({ encodings: [{ active: true }] }),

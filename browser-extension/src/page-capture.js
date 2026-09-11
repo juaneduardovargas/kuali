@@ -24,6 +24,43 @@
   const platform = host === "meet.google.com"
     ? "google_meet"
     : (host === "zoom.us" || host.endsWith(".zoom.us") ? "zoom" : "microsoft_teams");
+  const mediaDevices = navigator.mediaDevices;
+  const nativeGetUserMedia = mediaDevices?.getUserMedia?.bind(mediaDevices) || null;
+  const observedPageMicrophones = new Map();
+
+  function rememberPageMicrophone(stream) {
+    if (!(stream instanceof MediaStream)) return;
+    for (const track of stream.getAudioTracks()) {
+      if (track.readyState === "ended") continue;
+      const observation = { track, observedAt: Date.now() };
+      observedPageMicrophones.set(track.id, observation);
+      track.addEventListener("ended", () => {
+        if (observedPageMicrophones.get(track.id) === observation) {
+          observedPageMicrophones.delete(track.id);
+        }
+      }, { once: true });
+    }
+  }
+
+  // Teams may keep its peer connection in a worker, but it still requests the
+  // microphone through the page. Retain only a reference here; Kuali does not
+  // read it until the user explicitly starts recording.
+  if (nativeGetUserMedia) {
+    const observedGetUserMedia = async (...args) => {
+      const stream = await nativeGetUserMedia(...args);
+      if (args[0]?.audio) rememberPageMicrophone(stream);
+      return stream;
+    };
+    try {
+      Object.defineProperty(mediaDevices, "getUserMedia", {
+        configurable: true,
+        writable: true,
+        value: observedGetUserMedia,
+      });
+    } catch (_) {
+      try { mediaDevices.getUserMedia = observedGetUserMedia; } catch (_) {}
+    }
+  }
 
   let running = false;
   let context = null;
@@ -2038,7 +2075,7 @@
     if (deviceId) {
       try {
         return {
-          stream: await navigator.mediaDevices.getUserMedia({
+          stream: await nativeGetUserMedia({
             audio: { deviceId: { exact: deviceId } },
             video: false,
           }),
@@ -2052,7 +2089,7 @@
     }
     if (!captureDesired) throw new Error("Capture was cancelled before opening the microphone");
     return {
-      stream: await navigator.mediaDevices.getUserMedia({ audio: true, video: false }),
+      stream: await nativeGetUserMedia({ audio: true, video: false }),
       source: "default-device-stream",
     };
   }
@@ -2073,6 +2110,12 @@
       || candidates.find((candidate) => candidate.active)?.track
       || candidates[0]?.track
       || null;
+  }
+
+  function observedPageMicrophoneTrack() {
+    return [...observedPageMicrophones.values()]
+      .filter(({ track }) => track.readyState === "live")
+      .sort((left, right) => right.observedAt - left.observedAt)[0]?.track || null;
   }
 
   function acquirePendingMicrophoneRequest(meetSenderTrack) {
@@ -2142,23 +2185,39 @@
       const senderTrack = ["google_meet", "microsoft_teams"].includes(platform)
         ? localAudioSenderTrack()
         : null;
-      const microphoneRequest = acquirePendingMicrophoneRequest(senderTrack);
-      const microphoneOutcome = await awaitCaptureStep(microphoneRequest.promise, signal);
-      if (microphoneOutcome.cancelled) return false;
-      const { stream: nextMicStream, source: microphoneSource, error } = microphoneOutcome.value;
-      if (error) {
-        if (pendingMicrophoneRequest === microphoneRequest) pendingMicrophoneRequest = null;
-        throw error;
+      const pageTrack = ["google_meet", "microsoft_teams"].includes(platform)
+        ? observedPageMicrophoneTrack()
+        : null;
+      const sharedTrack = pageTrack || senderTrack;
+      let microphoneRequest = null;
+      let nextMicStream = null;
+      let microphoneSource = null;
+      if (sharedTrack && typeof sharedTrack.clone === "function") {
+        nextMicStream = new MediaStream([sharedTrack.clone()]);
+        microphoneSource = pageTrack ? "page-microphone-clone" : "sender-track-clone";
+      } else {
+        microphoneRequest = acquirePendingMicrophoneRequest(senderTrack);
+        const microphoneOutcome = await awaitCaptureStep(microphoneRequest.promise, signal);
+        if (microphoneOutcome.cancelled) return false;
+        const { stream, source, error } = microphoneOutcome.value;
+        if (error) {
+          if (pendingMicrophoneRequest === microphoneRequest) pendingMicrophoneRequest = null;
+          throw error;
+        }
+        nextMicStream = stream;
+        microphoneSource = source;
       }
       if (!captureIntentIsCurrent(intent, signal) || !running) {
-        if (!captureDesired && pendingMicrophoneRequest === microphoneRequest) {
-          for (const track of nextMicStream?.getTracks?.() || []) track.stop();
+        for (const track of nextMicStream?.getTracks?.() || []) track.stop();
+        if (microphoneRequest && pendingMicrophoneRequest === microphoneRequest) {
           pendingMicrophoneRequest = null;
         }
         return false;
       }
-      microphoneRequest.claimed = true;
-      if (pendingMicrophoneRequest === microphoneRequest) pendingMicrophoneRequest = null;
+      if (microphoneRequest) {
+        microphoneRequest.claimed = true;
+        if (pendingMicrophoneRequest === microphoneRequest) pendingMicrophoneRequest = null;
+      }
       micStream = nextMicStream;
       micStreamOwned = true;
       const currentMeetUser = platform === "google_meet"
