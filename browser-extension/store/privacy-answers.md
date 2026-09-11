@@ -1,32 +1,34 @@
 # Chrome Web Store privacy answers
 
-These answers describe version `0.1.6`.
+These answers describe version `0.1.7`.
 
 ## Single purpose
 
-> Capture audio and participant information from a user-selected Google Meet,
-> Microsoft Teams, or Zoom meeting and send it to the Kuali desktop application
-> on the same computer for live transcription and meeting notes.
+> Capture audio, participant information, and optionally the visible tab from a
+> user-selected Google Meet, Microsoft Teams, or Zoom meeting and send it to the
+> Kuali desktop application on the same computer for live transcription, local
+> meeting media, diagnostics, and notes.
 
 ## Permission justifications
 
 ### `storage`
 
-> Stores only the user-selected loopback port used to connect to the local Kuali
-> desktop application. No meeting audio or transcript is stored in extension
-> storage.
+> Stores only the user-selected loopback port and pairing code used to connect
+> to the local Kuali desktop application. No meeting audio, video, diagnostic,
+> or transcript is stored in extension storage.
 
 ### `tabCapture`
 
-> Captures the current meeting tab's mixed audio only when Zoom or Microsoft
-> Teams does not expose individual WebRTC audio tracks. It is started by an
-> explicit user action and stopped when capture or the meeting ends.
+> Captures the current meeting tab's mixed audio as a resilient fallback on all
+> supported platforms and, only when enabled in the desktop settings, captures
+> the visible tab as local WebM video. It is started by an explicit user action
+> and stopped when capture or the meeting ends.
 
 ### `offscreen`
 
-> Runs the user-authorized mixed tab-audio fallback in Manifest V3 and replays
-> the captured tab audio so the user can continue hearing the meeting. It is
-> used only while a supported meeting is actively being captured.
+> Runs the user-authorized mixed tab-audio fallback and optional visible-tab
+> MediaRecorder in Manifest V3, and replays captured tab audio so the user can
+> continue hearing the meeting. It is used only during active capture.
 
 ### Host permissions: Google Meet, Microsoft Teams, and Zoom
 
@@ -54,7 +56,8 @@ Declare these categories:
 
 - **Personally identifiable information:** participant display names,
   usernames, platform identifiers, and avatar URLs.
-- **Personal communications:** live meeting audio and its transcript.
+- **Personal communications:** live meeting audio, optional visible-tab video,
+  and the transcript.
 - **User activity:** mute state and speaking activity used to attribute audio.
 - **Website content:** meeting identifier and meeting-page title.
 
@@ -79,7 +82,7 @@ Certify all of the following truthfully:
 ## Disclosure surfaces
 
 Before every capture, both the toolbar popup and the in-page suggestion disclose
-audio, participant identity, local processing, and optional configured
-destinations. Capture remains disabled until the user confirms participant
+audio, optional visible-tab and local-file retention, participant identity,
+local processing, and optional configured destinations. Capture remains disabled until the user confirms participant
 notice/permission. During capture, the page shows a persistent indicator, the
 toolbar badge reads `REC`, and both provide a stop control.

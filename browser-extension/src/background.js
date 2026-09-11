@@ -3,9 +3,19 @@
  * SPDX-License-Identifier: Apache-2.0
  * Kuali implementation of the Vexa-derived capture.v1 wire contract.
  */
-import { encodeAudio, encodeMeetingEvent, mapFrameChannel } from "./protocol.js";
+import {
+  encodeAudio,
+  encodeMeetingEvent,
+  encodeRecordingChunk,
+  mapFrameChannel,
+  SCREEN_RECORDING_WEBM,
+} from "./protocol.js";
 import { healthUrl, isKualiHealthMessage } from "./health.js";
-import { meetingPresence } from "./lifecycle.js";
+import {
+  fallbackFramesAfterSeparateAudio,
+  meetingPresence,
+  shouldPromoteMixedFallback,
+} from "./lifecycle.js";
 
 const DEFAULT_PORT = 9099;
 const HEALTH_TIMEOUT_MS = 900;
@@ -39,6 +49,10 @@ function stateFor(tabId) {
       fallbackPending: [],
       fallbackTimer: null,
       fallbackPromoted: false,
+      fallbackActive: false,
+      fallbackStartedAt: 0,
+      lastSeparateAudioAt: 0,
+      capture: { audio: false, screen: false, diagnostics: false },
     };
     sessions.set(tabId, state);
   }
@@ -61,7 +75,7 @@ function scheduleAutomaticStop(tabId, state) {
 }
 
 function needsMixedFallback(platform) {
-  return platform === "zoom" || platform === "microsoft_teams";
+  return ["google_meet", "zoom", "microsoft_teams"].includes(platform);
 }
 
 function mintTabStream(tabId) {
@@ -82,7 +96,7 @@ async function ensureOffscreen() {
   await chrome.offscreen.createDocument({
     url: "offscreen.html",
     reasons: ["USER_MEDIA", "AUDIO_PLAYBACK"],
-    justification: "Capture and replay the mixed meeting tab when no individual WebRTC tracks are exposed",
+    justification: "Capture and replay the meeting tab for resilient local audio and optional screen recording",
   });
 }
 
@@ -94,8 +108,11 @@ async function startMixedFallback(tabId, state) {
       type: "mixed-capture-start",
       tabId,
       streamId: state.fallbackStreamId,
+      recordScreen: state.capture.screen === true,
     });
     if (result?.ok === false) throw new Error(result.error);
+    state.fallbackActive = true;
+    state.fallbackStartedAt = Date.now();
   } catch (error) {
     const detail = String(error?.message || error);
     state.error = translated("mixedCaptureError", `Could not capture mixed audio: ${detail}`, [detail]);
@@ -103,12 +120,15 @@ async function startMixedFallback(tabId, state) {
   }
 }
 
-function stopMixedFallback(state) {
+async function stopMixedFallback(state) {
   clearTimeout(state.fallbackTimer);
   state.fallbackTimer = null;
   state.fallbackPending.length = 0;
   state.fallbackStreamId = null;
-  chrome.runtime.sendMessage({ type: "mixed-capture-stop" }).catch(() => {});
+  state.fallbackStartedAt = 0;
+  if (!state.fallbackActive) return;
+  state.fallbackActive = false;
+  await chrome.runtime.sendMessage({ type: "mixed-capture-stop" }).catch(() => {});
 }
 
 function promoteMixedFallback(tabId, state) {
@@ -133,7 +153,19 @@ function promoteMixedFallback(tabId, state) {
     speaker: "Sala",
     detail,
   }));
-  for (const frame of state.fallbackPending) {
+  socket.send(encodeMeetingEvent({
+    kind: "capture-fallback",
+    ts: Date.now(),
+    detail: {
+      state: "promoted",
+      reason: "separate-audio-stalled",
+      lastSeparateAudioAt: state.lastSeparateAudioAt || null,
+    },
+  }));
+  for (const frame of fallbackFramesAfterSeparateAudio(
+    state.fallbackPending,
+    state.lastSeparateAudioAt,
+  )) {
     socket.send(encodeAudio(999, frame.ts, frame.pcm));
   }
   state.fallbackPending.length = 0;
@@ -141,9 +173,15 @@ function promoteMixedFallback(tabId, state) {
 }
 
 function preferPageAudio(tabId, state) {
-  if (!state.fallbackStreamId && !state.fallbackPromoted) return;
+  state.lastSeparateAudioAt = Date.now();
+  if (!state.fallbackPromoted) return;
   const socket = state.socket;
   if (state.fallbackPromoted && socket?.readyState === WebSocket.OPEN) {
+    socket.send(encodeMeetingEvent({
+      kind: "capture-fallback",
+      ts: Date.now(),
+      detail: { state: "standby", reason: "separate-audio-resumed" },
+    }));
     socket.send(encodeMeetingEvent({
       kind: "participant-left",
       ts: Date.now(),
@@ -153,7 +191,7 @@ function preferPageAudio(tabId, state) {
     state.channels.delete(999);
   }
   state.fallbackPromoted = false;
-  stopMixedFallback(state);
+  state.fallbackPending.length = 0;
   publish(tabId);
 }
 
@@ -261,10 +299,12 @@ async function start(tabId) {
     publish(tabId);
     return;
   }
-  stop(tabId, false);
+  await stop(tabId, false);
   state.hadSelf = false;
   state.selfPresent = false;
   state.error = null;
+  state.lastSeparateAudioAt = 0;
+  state.capture = { audio: false, screen: false, diagnostics: false };
   if (needsMixedFallback(state.info.platform)) {
     // Request this while the popup click still carries user activation.
     state.fallbackStreamId = await mintTabStream(tabId);
@@ -305,6 +345,16 @@ async function start(tabId) {
         return;
       }
       if (response?.type !== "ready") return;
+      state.capture = {
+        audio: response.capture?.audio === true,
+        screen: response.capture?.screen === true,
+        diagnostics: response.capture?.diagnostics === true,
+      };
+      socket.send(encodeMeetingEvent({
+        kind: "capture-options",
+        ts: Date.now(),
+        detail: state.capture,
+      }));
       state.status = "capturing";
       clearInterval(state.keepAlive);
       // Chrome 116+ preserves the service worker while its WebSocket exchanges
@@ -351,9 +401,13 @@ async function start(tabId) {
   };
 }
 
-function stop(tabId, notify = true) {
+async function stop(tabId, notify = true) {
   const state = stateFor(tabId);
   const socket = state.socket;
+  if (notify) sendControl(tabId, state, "stop");
+  // Keep the socket open until MediaRecorder has emitted and forwarded its
+  // final chunk. Otherwise the last second of a normal stop would be lost.
+  await stopMixedFallback(state);
   clearInterval(state.keepAlive);
   state.keepAlive = null;
   state.socket = null;
@@ -366,9 +420,7 @@ function stop(tabId, notify = true) {
   state.hadSelf = false;
   cancelAutomaticStop(state);
   state.fallbackPromoted = false;
-  stopMixedFallback(state);
   if (socket) socket.close(1000, "capture stopped");
-  if (notify) sendControl(tabId, state, "stop");
   publish(tabId);
 }
 
@@ -421,14 +473,19 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
         platform: state.info?.platform,
         kualiAvailable: false,
       }));
-      break;
+      return true;
     case "capture-event": {
       const socket = state.socket;
       if (!socket || socket.readyState !== WebSocket.OPEN || state.status !== "capturing") break;
       const event = message.event;
       const frameId = sender.frameId ?? 0;
       if (event.type === "audio" && Number.isInteger(event.channel) && Array.isArray(event.pcm)) {
-        socket.send(encodeAudio(wireChannel(state, frameId, event.channel), event.ts || Date.now(), event.pcm));
+        const channel = wireChannel(state, frameId, event.channel);
+        const binding = state.channels.get(channel);
+        if (binding && binding.audioKind !== "mixed" && binding.isSelf !== true) {
+          preferPageAudio(tabId, state);
+        }
+        socket.send(encodeAudio(channel, event.ts || Date.now(), event.pcm));
       } else if (event.type === "meeting-event") {
         const detail = event.detail ? { ...event.detail } : null;
         if (detail && Number.isInteger(detail.channel)) {
@@ -444,7 +501,6 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
           publish(tabId);
         } else if (event.kind === "participant-upsert" && detail && Number.isInteger(detail.channel)) {
           state.channels.set(detail.channel, detail);
-          if (!detail.isSelf) preferPageAudio(tabId, state);
           publish(tabId);
         } else if (event.kind === "participant-left" && detail && Number.isInteger(detail.channel)) {
           state.channels.delete(detail.channel);
@@ -475,26 +531,68 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
           }
           publish(tabId);
         }
-        socket.send(encodeMeetingEvent({ ...event, detail }));
+        if (event.kind !== "meet-probe" || state.capture.diagnostics) {
+          socket.send(encodeMeetingEvent({ ...event, detail }));
+        }
       }
       break;
     }
     case "mixed-audio": {
       const socket = state.socket;
       if (!socket || socket.readyState !== WebSocket.OPEN || state.status !== "capturing") break;
+      const timestamp = message.ts || Date.now();
       if (state.fallbackPromoted) {
         socket.send(encodeAudio(999, message.ts || Date.now(), message.pcm || []));
         break;
       }
-      state.fallbackPending.push({ ts: message.ts || Date.now(), pcm: message.pcm || [] });
+      state.fallbackPending.push({ ts: timestamp, pcm: message.pcm || [] });
       if (state.fallbackPending.length > 40) state.fallbackPending.shift();
-      if (!state.fallbackTimer) {
-        state.fallbackTimer = setTimeout(() => promoteMixedFallback(tabId, state), 1800);
+      if (shouldPromoteMixedFallback(
+        timestamp,
+        state.lastSeparateAudioAt,
+        state.fallbackStartedAt,
+      )) {
+        promoteMixedFallback(tabId, state);
+      }
+      break;
+    }
+    case "recording-chunk": {
+      const socket = state.socket;
+      if (!socket || socket.readyState !== WebSocket.OPEN || state.status !== "capturing") break;
+      if (!state.capture.screen || message.format !== SCREEN_RECORDING_WEBM) break;
+      const bytes = Uint8Array.from(message.bytes || []);
+      if (bytes.byteLength > 2 * 1024 * 1024 - 16) {
+        state.error = translated(
+          "screenChunkTooLargeError",
+          "A screen recording chunk exceeded the local safety limit.",
+        );
+        publish(tabId);
+        break;
+      }
+      socket.send(encodeRecordingChunk(
+        message.sequence,
+        message.isFinal === true,
+        message.format,
+        bytes,
+      ));
+      break;
+    }
+    case "recording-error": {
+      const socket = state.socket;
+      if (socket?.readyState === WebSocket.OPEN) {
+        socket.send(encodeMeetingEvent({
+          kind: "warning",
+          ts: Date.now(),
+          detail: { code: "screen-recording-failed", message: message.error || "MediaRecorder failed" },
+        }));
       }
       break;
     }
   }
-  return true;
+  // Messages that do not produce a reply must close their port immediately.
+  // Offscreen recording shutdown awaits these promises before finalizing the
+  // WebM, so falsely advertising an async response would deadlock Stop.
+  return undefined;
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {

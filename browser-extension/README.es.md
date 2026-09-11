@@ -89,9 +89,10 @@ instalación manual seguirá disponible para desarrollo y como alternativa.
 ## Privacidad
 
 La captura exige confirmar que informaste a los participantes. Mientras está
-activa se muestran un indicador en la página y la insignia `REC`. El audio sólo
-va a la app Kuali en `127.0.0.1` y la extensión no conserva ningún archivo de
-audio. Consulta la [política completa](../PRIVACY.es.md).
+activa se muestran un indicador en la página y la insignia `REC`. Los datos sólo
+van a la app Kuali en `127.0.0.1`. Ajustes opcionales permiten guardar pistas
+WAV, un WebM de la pestaña visible y diagnósticos saneados en la carpeta local
+de la reunión. Consulta la [política completa](../PRIVACY.es.md).
 
 ## Licencia
 

@@ -14,9 +14,18 @@
 
 pub mod markdown;
 
+use std::collections::HashMap;
+use std::fs::{File, OpenOptions};
+use std::io::{BufWriter, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 
-use kuali_core::{Meeting, MeetingMeta};
+use kuali_core::{DiscordUserId, Meeting, MeetingMeta};
+
+const ARCHIVE_SAMPLE_RATE: u32 = 16_000;
+const WAV_HEADER_BYTES: u64 = 44;
+/// `REC1` format code used by the browser extension for VP8 video plus Opus
+/// audio in a WebM container.
+pub const SCREEN_RECORDING_WEBM: u32 = 1;
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -30,6 +39,8 @@ pub enum StoreError {
     Corrupt(#[from] serde_json::Error),
     #[error("no meeting exists with id `{0}`")]
     NotFound(String),
+    #[error("invalid local meeting media: {0}")]
+    InvalidMedia(String),
 }
 
 type Result<T> = std::result::Result<T, StoreError>;
@@ -83,6 +94,223 @@ pub fn save(meeting: &Meeting) -> Result<()> {
         &serde_json::to_vec_pretty(&meeting.meta)?,
     )?;
     Ok(())
+}
+
+/// Crash-readable JSONL capture telemetry. Each append is independently valid,
+/// so a forced browser or desktop exit still leaves the preceding diagnostics.
+pub fn append_capture_diagnostic(id: &str, event: &serde_json::Value) -> Result<()> {
+    let dir = meeting_dir(id);
+    std::fs::create_dir_all(&dir).map_err(io(&dir))?;
+    let path = dir.join("capture-diagnostics.jsonl");
+    let mut file = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .map_err(io(&path))?;
+    serde_json::to_writer(&mut file, event)?;
+    file.write_all(b"\n").map_err(io(&path))?;
+    Ok(())
+}
+
+/// Human-readable mapping from stable numeric file names to the participant
+/// identity saved in the meeting record.
+pub fn save_audio_manifest(meeting: &Meeting) -> Result<()> {
+    let directory = meeting_dir(&meeting.meta.id).join("audio");
+    let tracks = meeting
+        .speakers
+        .iter()
+        .filter_map(|speaker| {
+            let file = format!("speaker-{}.wav", speaker.user_id);
+            directory.join(&file).is_file().then(|| {
+                serde_json::json!({
+                    "speakerId": speaker.user_id.to_string(),
+                    "displayName": speaker.display_name,
+                    "file": file,
+                    "isSelf": speaker.is_self,
+                    "audioKind": speaker.audio_kind,
+                })
+            })
+        })
+        .collect::<Vec<_>>();
+    if tracks.is_empty() {
+        return Ok(());
+    }
+    let manifest = serde_json::json!({
+        "sampleRate": ARCHIVE_SAMPLE_RATE,
+        "channelsPerTrack": 1,
+        "bitsPerSample": 16,
+        "tracks": tracks,
+    });
+    write_atomic(
+        &directory.join("manifest.json"),
+        &serde_json::to_vec_pretty(&manifest)?,
+    )
+}
+
+/// Aligned, per-participant PCM archive. A track begins with silence up to its
+/// first packet so every WAV shares the meeting clock and can be mixed later.
+pub struct AudioArchive {
+    directory: PathBuf,
+    tracks: HashMap<DiscordUserId, WavTrack>,
+}
+
+impl AudioArchive {
+    pub fn new(meeting_id: &str) -> Result<Self> {
+        let directory = meeting_dir(meeting_id).join("audio");
+        std::fs::create_dir_all(&directory).map_err(io(&directory))?;
+        Ok(Self {
+            directory,
+            tracks: HashMap::new(),
+        })
+    }
+
+    pub fn write_pcm(&mut self, user_id: DiscordUserId, at_ms: u64, pcm: &[i16]) -> Result<()> {
+        if pcm.is_empty() {
+            return Ok(());
+        }
+        if !self.tracks.contains_key(&user_id) {
+            self.tracks
+                .insert(user_id, WavTrack::new(&self.directory, user_id)?);
+        }
+        self.tracks
+            .get_mut(&user_id)
+            .expect("inserted WAV track")
+            .write_aligned(at_ms, pcm)
+    }
+
+    pub fn finish(mut self) -> Result<()> {
+        for (_, track) in self.tracks.drain() {
+            track.finish()?;
+        }
+        Ok(())
+    }
+}
+
+struct WavTrack {
+    part_path: PathBuf,
+    final_path: PathBuf,
+    writer: BufWriter<File>,
+    written_samples: u64,
+}
+
+impl WavTrack {
+    fn new(directory: &Path, user_id: DiscordUserId) -> Result<Self> {
+        let part_path = directory.join(format!("speaker-{user_id}.wav.part"));
+        let final_path = directory.join(format!("speaker-{user_id}.wav"));
+        let file = File::create(&part_path).map_err(io(&part_path))?;
+        let mut writer = BufWriter::new(file);
+        writer.write_all(&wav_header(0)).map_err(io(&part_path))?;
+        Ok(Self {
+            part_path,
+            final_path,
+            writer,
+            written_samples: 0,
+        })
+    }
+
+    fn write_aligned(&mut self, at_ms: u64, pcm: &[i16]) -> Result<()> {
+        let expected_samples = at_ms.saturating_mul(ARCHIVE_SAMPLE_RATE as u64) / 1_000;
+        if expected_samples > self.written_samples {
+            let mut silence = expected_samples - self.written_samples;
+            const ZEROES: [u8; 8_192] = [0; 8_192];
+            while silence > 0 {
+                let samples = silence.min((ZEROES.len() / 2) as u64) as usize;
+                self.writer
+                    .write_all(&ZEROES[..samples * 2])
+                    .map_err(io(&self.part_path))?;
+                self.written_samples += samples as u64;
+                silence -= samples as u64;
+            }
+        }
+        for sample in pcm {
+            self.writer
+                .write_all(&sample.to_le_bytes())
+                .map_err(io(&self.part_path))?;
+        }
+        self.written_samples = self.written_samples.saturating_add(pcm.len() as u64);
+        Ok(())
+    }
+
+    fn finish(mut self) -> Result<()> {
+        self.writer.flush().map_err(io(&self.part_path))?;
+        self.writer
+            .seek(SeekFrom::Start(0))
+            .map_err(io(&self.part_path))?;
+        let data_bytes = self.written_samples.saturating_mul(2).min(u32::MAX as u64) as u32;
+        self.writer
+            .write_all(&wav_header(data_bytes))
+            .map_err(io(&self.part_path))?;
+        self.writer.flush().map_err(io(&self.part_path))?;
+        drop(self.writer);
+        std::fs::rename(&self.part_path, &self.final_path).map_err(io(&self.final_path))?;
+        Ok(())
+    }
+}
+
+fn wav_header(data_bytes: u32) -> [u8; WAV_HEADER_BYTES as usize] {
+    let mut out = [0u8; WAV_HEADER_BYTES as usize];
+    out[0..4].copy_from_slice(b"RIFF");
+    out[4..8].copy_from_slice(&data_bytes.saturating_add(36).to_le_bytes());
+    out[8..12].copy_from_slice(b"WAVE");
+    out[12..16].copy_from_slice(b"fmt ");
+    out[16..20].copy_from_slice(&16u32.to_le_bytes());
+    out[20..22].copy_from_slice(&1u16.to_le_bytes());
+    out[22..24].copy_from_slice(&1u16.to_le_bytes());
+    out[24..28].copy_from_slice(&ARCHIVE_SAMPLE_RATE.to_le_bytes());
+    out[28..32].copy_from_slice(&(ARCHIVE_SAMPLE_RATE * 2).to_le_bytes());
+    out[32..34].copy_from_slice(&2u16.to_le_bytes());
+    out[34..36].copy_from_slice(&16u16.to_le_bytes());
+    out[36..40].copy_from_slice(b"data");
+    out[40..44].copy_from_slice(&data_bytes.to_le_bytes());
+    out
+}
+
+/// Ordered writer for a continuous browser MediaRecorder stream.
+pub struct ScreenRecordingArchive {
+    part_path: PathBuf,
+    final_path: PathBuf,
+    writer: BufWriter<File>,
+    next_sequence: u32,
+}
+
+impl ScreenRecordingArchive {
+    pub fn new(meeting_id: &str, format: u32) -> Result<Self> {
+        if format != SCREEN_RECORDING_WEBM {
+            return Err(StoreError::InvalidMedia(format!(
+                "unsupported screen recording format {format}"
+            )));
+        }
+        let directory = meeting_dir(meeting_id);
+        std::fs::create_dir_all(&directory).map_err(io(&directory))?;
+        let part_path = directory.join("screen.webm.part");
+        let final_path = directory.join("screen.webm");
+        let writer = BufWriter::new(File::create(&part_path).map_err(io(&part_path))?);
+        Ok(Self {
+            part_path,
+            final_path,
+            writer,
+            next_sequence: 0,
+        })
+    }
+
+    pub fn write_chunk(&mut self, sequence: u32, bytes: &[u8]) -> Result<()> {
+        if sequence != self.next_sequence {
+            return Err(StoreError::InvalidMedia(format!(
+                "screen chunk {sequence} arrived while {} was expected",
+                self.next_sequence
+            )));
+        }
+        self.writer.write_all(bytes).map_err(io(&self.part_path))?;
+        self.next_sequence = self.next_sequence.saturating_add(1);
+        Ok(())
+    }
+
+    pub fn finish(mut self) -> Result<()> {
+        self.writer.flush().map_err(io(&self.part_path))?;
+        drop(self.writer);
+        std::fs::rename(&self.part_path, &self.final_path).map_err(io(&self.final_path))?;
+        Ok(())
+    }
 }
 
 pub fn load(id: &str) -> Result<Meeting> {
@@ -737,6 +965,64 @@ mod tests {
         assert!(meeting_file("abc").starts_with(meeting_dir("abc")));
         assert!(meta_file("abc").starts_with(meeting_dir("abc")));
         assert_ne!(meeting_file("abc"), meta_file("abc"));
+    }
+
+    #[test]
+    fn participant_audio_is_a_finalized_aligned_wav() {
+        let id = format!("test-audio-{}", std::process::id());
+        let mut archive = AudioArchive::new(&id).unwrap();
+        archive.write_pcm(42, 100, &[1, -2]).unwrap();
+        archive.finish().unwrap();
+
+        let path = meeting_dir(&id).join("audio/speaker-42.wav");
+        let bytes = std::fs::read(&path).unwrap();
+        assert_eq!(&bytes[0..4], b"RIFF");
+        assert_eq!(&bytes[8..12], b"WAVE");
+        assert_eq!(
+            u32::from_le_bytes(bytes[24..28].try_into().unwrap()),
+            16_000
+        );
+        // 100 ms of silence plus two real samples.
+        assert_eq!(u32::from_le_bytes(bytes[40..44].try_into().unwrap()), 3_204);
+        assert_eq!(bytes.len(), 44 + 3_204);
+        let mut meeting = sample();
+        meeting.meta.id.clone_from(&id);
+        meeting.speakers.push(Speaker {
+            user_id: 42,
+            source_id: Some("meet-device-42".into()),
+            audio_kind: Some("separate".into()),
+            display_name: "Belén".into(),
+            username: String::new(),
+            avatar_url: None,
+            color: "#fff".into(),
+            is_bot: false,
+            is_self: false,
+        });
+        save_audio_manifest(&meeting).unwrap();
+        let manifest: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(meeting_dir(&id).join("audio/manifest.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(manifest["tracks"][0]["displayName"], "Belén");
+        assert_eq!(manifest["tracks"][0]["speakerId"], "42");
+        delete(&id).unwrap();
+    }
+
+    #[test]
+    fn screen_chunks_are_ordered_and_atomically_finalized() {
+        let id = format!("test-screen-{}", std::process::id());
+        let mut archive = ScreenRecordingArchive::new(&id, SCREEN_RECORDING_WEBM).unwrap();
+        archive.write_chunk(0, &[1, 2]).unwrap();
+        archive.write_chunk(1, &[3, 4]).unwrap();
+        archive.finish().unwrap();
+
+        let directory = meeting_dir(&id);
+        assert_eq!(
+            std::fs::read(directory.join("screen.webm")).unwrap(),
+            [1, 2, 3, 4]
+        );
+        assert!(!directory.join("screen.webm.part").exists());
+        delete(&id).unwrap();
     }
 
     #[test]

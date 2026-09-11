@@ -100,6 +100,23 @@ pub enum VoiceEvent {
         user_id: DiscordUserId,
         pcm: Vec<i16>,
     },
+    /// Sanitized browser-capture telemetry retained only when the user enabled
+    /// local diagnostics. It never participates in transcription.
+    CaptureDiagnostic {
+        kind: String,
+        timestamp_ms: f64,
+        speaker: Option<String>,
+        text: Option<String>,
+        detail: Option<serde_json::Value>,
+    },
+    /// One ordered piece of a continuous MediaRecorder WebM stream. Format `1`
+    /// is VP8/Opus WebM; the final frame may carry no bytes and closes the file.
+    RecordingChunk {
+        sequence: u32,
+        is_final: bool,
+        format: u32,
+        bytes: Vec<u8>,
+    },
     /// A participant started or stopped sending audio. The interface uses this
     /// for activity indication before Whisper closes the turn.
     SpeakingChanged {

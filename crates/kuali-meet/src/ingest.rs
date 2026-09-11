@@ -37,13 +37,22 @@ const TICK_MS: u64 = 20;
 /// finalizes the meeting instead of leaving Kuali listening forever.
 const CLIENT_LIVENESS_TIMEOUT: Duration = Duration::from_secs(50);
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
-/// A normal 20 ms PCM packet is about 1.3 KiB. This leaves ample room for a
-/// large roster while preventing one authenticated-but-buggy client from
-/// allocating Tungstenite's 64 MiB default message buffer.
-const MAX_MESSAGE_BYTES: usize = 256 * 1024;
+/// Audio packets are small, while a one-second bounded MediaRecorder chunk can
+/// be a few hundred KiB. Two MiB leaves codec headroom without restoring
+/// Tungstenite's unsafe 64 MiB default for an authenticated-but-buggy client.
+const MAX_MESSAGE_BYTES: usize = 2 * 1024 * 1024;
 /// Browser sessions are intentionally bounded so repeated connection attempts
 /// cannot create unbounded tasks and channels in the desktop process.
 const MAX_CONNECTIONS: usize = 8;
+
+/// Per-installation retention choices announced to the browser only after the
+/// paired WebSocket has been admitted.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CapturePreferences {
+    pub save_audio: bool,
+    pub save_screen_recording: bool,
+    pub save_diagnostics: bool,
+}
 
 fn client_is_stale(last_activity: Instant, now: Instant) -> bool {
     now.saturating_duration_since(last_activity) >= CLIENT_LIVENESS_TIMEOUT
@@ -87,6 +96,21 @@ pub async fn serve_on(
     events: UnboundedSender<VoiceEvent>,
     pairing_token: String,
 ) {
+    serve_on_with_preferences(
+        listener,
+        events,
+        pairing_token,
+        CapturePreferences::default(),
+    )
+    .await;
+}
+
+pub async fn serve_on_with_preferences(
+    listener: TcpListener,
+    events: UnboundedSender<VoiceEvent>,
+    pairing_token: String,
+    preferences: CapturePreferences,
+) {
     let pairing_token: Arc<str> = pairing_token.into();
     let connection_slots = Arc::new(Semaphore::new(MAX_CONNECTIONS));
     // Each connection runs in its own task and wraps events with a session ID,
@@ -106,7 +130,7 @@ pub async fn serve_on(
         let pairing_token = Arc::clone(&pairing_token);
         tokio::spawn(async move {
             let _connection_slot = connection_slot;
-            match handle_connection(stream, &events, &pairing_token).await {
+            match handle_connection(stream, &events, &pairing_token, preferences).await {
                 Ok(()) => tracing::info!("web meeting ended"),
                 // Ordinary HTTP traffic on this port is not a Kuali failure;
                 // record it at debug level and continue.
@@ -122,6 +146,7 @@ async fn handle_connection(
     stream: TcpStream,
     events: &UnboundedSender<VoiceEvent>,
     pairing_token: &str,
+    preferences: CapturePreferences,
 ) -> Result<(), tokio_tungstenite::tungstenite::Error> {
     // The path carries meeting data: `?platform=…&native_meeting_id=…`.
     let mut request_path = String::new();
@@ -226,11 +251,16 @@ async fn handle_connection(
     let ready = serde_json::json!({
         "type": "ready",
         "meeting_id": meeting.native_meeting_id,
+        "capture": {
+            "audio": preferences.save_audio,
+            "screen": preferences.save_screen_recording,
+            "diagnostics": preferences.save_diagnostics,
+        },
     });
     sink.send(Message::Text(ready.to_string().into())).await?;
 
     let mut ticker = tokio::time::interval(Duration::from_millis(TICK_MS));
-    let mut session = Session::new(meeting);
+    let mut session = Session::new(meeting, preferences);
     // This distinguishes an extension that cannot connect from one that connects
     // but captures no audio, which require different diagnostics.
     let mut frames = 0u64;
@@ -276,21 +306,25 @@ async fn handle_connection(
                 last_client_activity = Instant::now();
                 match message? {
                     Message::Binary(bytes) => {
-                        if let Ok(Frame::Audio(frame)) = decode_binary(&bytes) {
-                            if frames == 0 {
-                                tracing::info!(
-                                    speaker = frame.speaker_name.as_deref().unwrap_or("unnamed"),
-                                    channel = frame.speaker_index,
-                                    "received first web meeting audio frame"
+                        match decode_binary(&bytes) {
+                            Ok(Frame::Audio(frame)) => {
+                                if frames == 0 {
+                                    tracing::info!(
+                                        speaker = frame.speaker_name.as_deref().unwrap_or("unnamed"),
+                                        channel = frame.speaker_index,
+                                        "received first web meeting audio frame"
+                                    );
+                                }
+                                frames += 1;
+                                samples += frame.samples.len() as u64;
+                                peak = peak.max(
+                                    frame.samples.iter().fold(0.0f32, |m, s| m.max(s.abs())),
                                 );
+                                on_frame(Frame::Audio(frame), &mut session, events);
                             }
-                            frames += 1;
-                            samples += frame.samples.len() as u64;
-                            peak = peak.max(
-                                frame.samples.iter().fold(0.0f32, |m, s| m.max(s.abs())),
-                            );
+                            Ok(frame) => on_frame(frame, &mut session, events),
+                            Err(error) => tracing::debug!(%error, "unreadable web meeting frame"),
                         }
-                        on_binary(&bytes, &mut session, events)
                     }
                     Message::Text(json) => on_text(&json, &mut session, events),
                     Message::Ping(payload) => sink.send(Message::Pong(payload)).await?,
@@ -349,25 +383,40 @@ fn pairing_token_is_valid(request: &Request, expected: &str) -> bool {
     bool::from(supplied.as_bytes().ct_eq(expected.as_bytes()))
 }
 
+#[cfg(test)]
 fn on_binary(bytes: &[u8], session: &mut Session, events: &UnboundedSender<VoiceEvent>) {
     let frame = match decode_binary(bytes) {
-        Ok(Frame::Audio(frame)) => frame,
-        // Combined recordings share the socket but are not transcription audio.
-        Ok(_) => return,
+        Ok(frame) => frame,
         Err(e) => {
             tracing::debug!("unreadable web meeting frame: {e}");
             return;
         }
     };
+    on_frame(frame, session, events);
+}
 
-    announce_speaker(&frame, session, events);
-    if frame.samples.is_empty() {
-        return;
+fn on_frame(frame: Frame, session: &mut Session, events: &UnboundedSender<VoiceEvent>) {
+    match frame {
+        Frame::Audio(frame) => {
+            announce_speaker(&frame, session, events);
+            if frame.samples.is_empty() {
+                return;
+            }
+            let _ = events.send(VoiceEvent::Audio {
+                user_id: session.speaker_id(frame.speaker_index),
+                pcm: to_i16(&frame.samples),
+            });
+        }
+        Frame::Recording(frame) if session.preferences.save_screen_recording => {
+            let _ = events.send(VoiceEvent::RecordingChunk {
+                sequence: frame.sequence,
+                is_final: frame.is_final,
+                format: frame.format,
+                bytes: frame.bytes,
+            });
+        }
+        Frame::Recording(_) | Frame::Event(_) => {}
     }
-    let _ = events.send(VoiceEvent::Audio {
-        user_id: session.speaker_id(frame.speaker_index),
-        pcm: to_i16(&frame.samples),
-    });
 }
 
 /// Notifies the engine when a participant is first heard or later identified.
@@ -430,6 +479,15 @@ fn on_text(json: &str, session: &mut Session, events: &UnboundedSender<VoiceEven
         tracing::debug!("unreadable web meeting event");
         return;
     };
+    if session.preferences.save_diagnostics && diagnostic_event(&event.kind) {
+        let _ = events.send(VoiceEvent::CaptureDiagnostic {
+            kind: event.kind.clone(),
+            timestamp_ms: event.ts,
+            speaker: event.speaker.clone(),
+            text: event.text.clone(),
+            detail: event.detail.as_ref().map(sanitize_diagnostic),
+        });
+    }
     match event.kind.as_str() {
         "participant-upsert" => upsert_participant(&event, session, events),
         // Roster presence does not require speech, allowing the UI to show all
@@ -486,6 +544,44 @@ fn on_text(json: &str, session: &mut Session, events: &UnboundedSender<VoiceEven
             let _ = events.send(VoiceEvent::Warning(message.to_string()));
         }
         _ => {}
+    }
+}
+
+fn diagnostic_event(kind: &str) -> bool {
+    matches!(
+        kind,
+        "meet-probe"
+            | "warning"
+            | "track-connected"
+            | "participant-upsert"
+            | "participant-left"
+            | "roster-state"
+            | "active-speakers"
+            | "capture-options"
+            | "capture-fallback"
+    )
+}
+
+/// Profile images add no diagnostic value, can be large, and may contain signed
+/// URLs. Preserve identity and transport fields while removing those URLs.
+fn sanitize_diagnostic(value: &serde_json::Value) -> serde_json::Value {
+    match value {
+        serde_json::Value::Object(values) => serde_json::Value::Object(
+            values
+                .iter()
+                .filter(|(key, _)| {
+                    !matches!(
+                        key.to_ascii_lowercase().as_str(),
+                        "avatar" | "avatarurl" | "avatar_url" | "profilepicture"
+                    )
+                })
+                .map(|(key, value)| (key.clone(), sanitize_diagnostic(value)))
+                .collect(),
+        ),
+        serde_json::Value::Array(values) => {
+            serde_json::Value::Array(values.iter().map(sanitize_diagnostic).collect())
+        }
+        value => value.clone(),
     }
 }
 
@@ -804,10 +900,11 @@ struct Session {
     active_speakers: HashSet<DiscordUserId>,
     /// Latest local-gate state already written to the log.
     last_microphone_gate: Option<MicrophoneGateState>,
+    preferences: CapturePreferences,
 }
 
 impl Session {
-    fn new(meeting: MeetingParams) -> Self {
+    fn new(meeting: MeetingParams, preferences: CapturePreferences) -> Self {
         Self {
             meeting,
             channels: HashMap::new(),
@@ -815,6 +912,7 @@ impl Session {
             identities: HashMap::new(),
             active_speakers: HashSet::new(),
             last_microphone_gate: None,
+            preferences,
         }
     }
 
@@ -1000,10 +1098,13 @@ mod tests {
     const TEST_PAIRING_TOKEN: &str = "0123456789abcdef0123456789abcdef";
 
     fn test_session() -> Session {
-        Session::new(MeetingParams {
-            platform: "google_meet".into(),
-            native_meeting_id: "abc-defg-hij".into(),
-        })
+        Session::new(
+            MeetingParams {
+                platform: "google_meet".into(),
+                native_meeting_id: "abc-defg-hij".into(),
+            },
+            CapturePreferences::default(),
+        )
     }
 
     fn test_speaker_id(channel: u32) -> DiscordUserId {
@@ -1181,6 +1282,69 @@ mod tests {
         );
     }
 
+    #[test]
+    fn an_enabled_recording_chunk_is_forwarded_without_becoming_audio() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut session = Session::new(
+            MeetingParams {
+                platform: "google_meet".into(),
+                native_meeting_id: "abc-defg-hij".into(),
+            },
+            CapturePreferences {
+                save_screen_recording: true,
+                ..Default::default()
+            },
+        );
+        let mut bytes = 0x5245_4331u32.to_le_bytes().to_vec();
+        bytes.extend_from_slice(&3u32.to_le_bytes());
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(&1u32.to_le_bytes());
+        bytes.extend_from_slice(&[9, 8, 7]);
+        on_binary(&bytes, &mut session, &tx);
+        match rx.try_recv() {
+            Ok(VoiceEvent::RecordingChunk {
+                sequence,
+                is_final,
+                format,
+                bytes,
+            }) => {
+                assert_eq!(sequence, 3);
+                assert!(is_final);
+                assert_eq!(format, 1);
+                assert_eq!(bytes, [9, 8, 7]);
+            }
+            other => panic!("expected RecordingChunk, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn diagnostics_are_opt_in_and_strip_avatar_urls() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut session = Session::new(
+            MeetingParams {
+                platform: "google_meet".into(),
+                native_meeting_id: "abc-defg-hij".into(),
+            },
+            CapturePreferences {
+                save_diagnostics: true,
+                ..Default::default()
+            },
+        );
+        on_text(
+            r#"{"kind":"meet-probe","ts":42,"detail":{"avatarUrl":"https://private.test/signed","captureLanes":[{"channel":7}]}}"#,
+            &mut session,
+            &tx,
+        );
+        match rx.try_recv() {
+            Ok(VoiceEvent::CaptureDiagnostic { detail, .. }) => {
+                let detail = detail.expect("diagnostic detail");
+                assert!(detail.get("avatarUrl").is_none());
+                assert_eq!(detail["captureLanes"][0]["channel"], 7);
+            }
+            other => panic!("expected CaptureDiagnostic, got {other:?}"),
+        }
+    }
+
     /// Named frame matching Vexa's published golden vector.
     const AUDIO_NAMED: &[u8] = &[
         7, 0, 0, 128, 0, 128, 220, 121, 12, 0, 121, 66, 5, 0, 0, 0, 65, 108, 105, 99, 101, 0, 0, 0,
@@ -1196,7 +1360,16 @@ mod tests {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let listener = TcpListener::bind(("127.0.0.1", 0)).await.unwrap();
         let port = listener.local_addr().unwrap().port();
-        tokio::spawn(serve_on(listener, tx, TEST_PAIRING_TOKEN.into()));
+        tokio::spawn(serve_on_with_preferences(
+            listener,
+            tx,
+            TEST_PAIRING_TOKEN.into(),
+            CapturePreferences {
+                save_audio: true,
+                save_screen_recording: true,
+                save_diagnostics: true,
+            },
+        ));
 
         let url = format!(
             "ws://127.0.0.1:{port}/ingest?platform=google_meet&native_meeting_id=abc-defg-hij&api_key=x&language=es&pairing_token={TEST_PAIRING_TOKEN}"
@@ -1235,6 +1408,9 @@ mod tests {
                 let ready: serde_json::Value = serde_json::from_str(&json).unwrap();
                 assert_eq!(ready["type"], "ready");
                 assert_eq!(ready["meeting_id"], "abc-defg-hij");
+                assert_eq!(ready["capture"]["audio"], true);
+                assert_eq!(ready["capture"]["screen"], true);
+                assert_eq!(ready["capture"]["diagnostics"], true);
             }
             other => panic!("expected the `ready` greeting, got {other:?}"),
         }

@@ -74,6 +74,15 @@ pub struct WebMeetingsConfig {
     /// unrelated local process or extension. This token pairs the two Kuali
     /// components without granting ordinary websites access to meeting ingest.
     pub pairing_token: String,
+    /// Preserve the 16 kHz PCM received for every identified participant as
+    /// aligned, mono WAV files inside the meeting directory.
+    pub save_audio: bool,
+    /// Preserve the captured browser tab as a local WebM file. The tab's mixed
+    /// output audio is included; participant WAVs remain separate when enabled.
+    pub save_screen_recording: bool,
+    /// Persist sanitized capture telemetry next to the meeting. This is useful
+    /// when a platform update interrupts attribution or audio delivery.
+    pub save_diagnostics: bool,
 }
 
 impl Default for WebMeetingsConfig {
@@ -84,6 +93,11 @@ impl Default for WebMeetingsConfig {
             // Generated and persisted by the desktop entrypoint. Keeping the
             // structural default empty makes old config files detectable.
             pairing_token: String::new(),
+            // Media retention is an explicit opt-in. Existing installations
+            // keep their former in-memory-only behavior after upgrading.
+            save_audio: false,
+            save_screen_recording: false,
+            save_diagnostics: false,
         }
     }
 }
@@ -837,6 +851,20 @@ mod tests {
         let cfg = KualiConfig::default();
         let text = toml_round_trip(&cfg);
         assert_eq!(cfg, text);
+    }
+
+    #[test]
+    fn browser_media_retention_is_opt_in() {
+        let meet = WebMeetingsConfig::default();
+        assert!(!meet.save_audio);
+        assert!(!meet.save_screen_recording);
+        assert!(!meet.save_diagnostics);
+
+        let legacy: WebMeetingsConfig = serde_json::from_str(r#"{"enabled":true,"port":9099}"#)
+            .expect("deserialize settings written before local media retention");
+        assert!(!legacy.save_audio);
+        assert!(!legacy.save_screen_recording);
+        assert!(!legacy.save_diagnostics);
     }
 
     #[test]

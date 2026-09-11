@@ -30,7 +30,7 @@ const ui = {
   closeSuggestion: translated("closeSuggestion", "Close suggestion"),
   consentTitle: translated("consentTitle", "Before recording this meeting"),
   consentDetailed: translated("consentDetailed", "Kuali will capture participant audio and identity —name, photo, and platform ID— and send them to the Kuali app on this computer to transcribe the meeting."),
-  destinationDetailed: translated("destinationDetailed", "The app may share the transcript with the AI provider or webhook you configured. The extension does not sell data or retain audio as a file."),
+  destinationDetailed: translated("destinationDetailed", "Depending on your settings, the app may also save local audio tracks, the visible tab, and technical diagnostics. Only the transcript and its results may go to the AI provider or webhook you configured."),
   consentConfirmation: translated("consentDetailedConfirmation", "I confirm that I informed the participants and have permission to record and transcribe this meeting."),
   privacyPolicy: translated("privacyPolicy", "Read the privacy policy"),
   cancel: translated("cancel", "Cancel"),

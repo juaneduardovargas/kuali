@@ -13,7 +13,8 @@ Kuali does not operate an account service, advertising network, analytics
 service, or cloud transcription backend. The browser extension sends meeting
 audio and participant information only to the Kuali application running on
 your own computer. Whisper transcribes that audio locally. Kuali does not sell
-personal information and does not retain the captured audio as an audio file.
+personal information. Audio tracks, screen capture, and technical diagnostics
+are retained only when you explicitly enable those local settings.
 
 If you configure a summary provider, Discord delivery, or a webhook, the
 desktop application sends the data described below to that service at your
@@ -39,8 +40,8 @@ the call, attribute speakers, announce recording, and deliver results.
 Kuali also stores settings you enter, which may include a Discord bot token,
 Discord username or user ID, model location, special vocabulary, summary
 provider settings and API keys, and webhook URLs and signing secrets. The
-browser extension itself stores only the local port used to find the desktop
-application.
+browser extension itself stores only the local port and pairing code used to
+find and authenticate the desktop application.
 
 ## How information is used
 
@@ -97,9 +98,13 @@ deletes its browser-managed local-port preference according to the browser's
 normal extension-data behavior. Data already delivered to Discord, a summary
 provider, or a webhook is controlled by that service and must be deleted there.
 
-Captured PCM audio is processed in memory and is not retained as an audio file
-by Kuali. Temporary in-memory audio disappears when processing ends or the
-application closes.
+By default, captured PCM audio is processed in memory and disappears when
+processing ends or the application closes. If you enable local media retention,
+Kuali stores aligned participant WAV tracks, a WebM capture of the visible
+meeting tab with mixed output audio, and/or sanitized diagnostic JSONL inside
+that meeting's application-data directory. These files remain until you delete
+the meeting or remove its directory; Kuali does not send them to summary
+providers or webhooks.
 
 ## Recording notice and consent
 

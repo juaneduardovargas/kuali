@@ -269,9 +269,14 @@
   }
 
   function clearMeetRouteChallenge(route) {
-    route.challengeAudio.length = 0;
+    const buffered = route.challengeAudio.splice(0);
     route.challengeSamples = 0;
     route.challengeDeviceId = "";
+    // An inconclusive activity vote must never erase speech. Release it to the
+    // last structurally known route; if identity is still pending, onTrackPcm
+    // keeps it in the route's bounded pending queue.
+    if (!running) return;
+    for (const { entry, samples } of buffered) pushTrackProcessorPcm(entry, samples, route);
   }
 
   function holdMeetRoutePcm(route, entry, samples) {
@@ -279,7 +284,11 @@
     route.challengeAudio.push({ entry, samples: copy });
     route.challengeSamples += copy.length;
     while (route.challengeSamples > TARGET_RATE && route.challengeAudio.length > 1) {
-      route.challengeSamples -= route.challengeAudio.shift().samples.length;
+      const oldest = route.challengeAudio.shift();
+      route.challengeSamples -= oldest.samples.length;
+      // Bound memory without silently dropping the beginning of a long,
+      // unresolved challenge.
+      pushTrackProcessorPcm(oldest.entry, oldest.samples, route);
     }
   }
 
@@ -1437,6 +1446,8 @@
           channel: route.channel,
           disabled: route.disabled,
           displayName: route.identity?.name || null,
+          challengeDeviceId: route.challengeDeviceId || null,
+          challengeSamples: route.challengeSamples,
         })),
         meetUsers: [...meetUsers.values()].map((user) => ({
           deviceId: user.deviceId,

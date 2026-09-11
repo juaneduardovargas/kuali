@@ -5178,6 +5178,9 @@ async function openSettings() {
   state.discordEditing = !(c.discord["bot-token"]?.trim() && state.discordConnected);
   renderDiscordSettingsAccess();
   $("cfg-web-enabled").checked = c.meet?.enabled !== false;
+  $("cfg-web-save-audio").checked = c.meet?.["save-audio"] === true;
+  $("cfg-web-save-screen").checked = c.meet?.["save-screen-recording"] === true;
+  $("cfg-web-save-diagnostics").checked = c.meet?.["save-diagnostics"] === true;
   $("cfg-web-port").value = c.meet?.port ?? 9099;
   $("cfg-web-pairing-token").value = c.meet?.["pairing-token"] ?? "";
   $("cfg-web-port").disabled = !$("cfg-web-enabled").checked;
@@ -6078,6 +6081,9 @@ async function saveSettings() {
 
   c.meet ??= {};
   c.meet.enabled = $("cfg-web-enabled").checked;
+  c.meet["save-audio"] = $("cfg-web-save-audio").checked;
+  c.meet["save-screen-recording"] = $("cfg-web-save-screen").checked;
+  c.meet["save-diagnostics"] = $("cfg-web-save-diagnostics").checked;
   c.meet.port = webPort;
 
   c.whisper.model = $("cfg-model").value;

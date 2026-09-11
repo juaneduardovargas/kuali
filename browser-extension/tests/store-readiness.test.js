@@ -21,6 +21,7 @@ test("capture requires disclosure and affirmative confirmation", () => {
   const content = read("src/content.js");
   assert.match(popup, /participant-consent/);
   assert.match(popup, /captureDisclosure/);
+  assert.match(popup, /local audio tracks, the visible tab, and technical diagnostics/);
   assert.match(popup, /privacy\.html/);
   assert.match(content, /consentCheck\.checked/);
   assert.match(content, /recordingIndicator/);

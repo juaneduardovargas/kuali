@@ -33,8 +33,9 @@ Kuali listens to live calls, transcribes them on your computer, and keeps every
 speaker attached to their words. Meetings become a searchable library with live
 transcripts, summaries, decisions, questions, and participant-owned tasks.
 
-Raw audio is processed in memory by Whisper and Silero. It is never retained as
-an audio recording and never sent to a Kuali-operated service.
+Raw audio is processed locally by Whisper and Silero and is never sent to a
+Kuali-operated service. Optional browser-meeting settings can retain local
+participant WAV tracks, a WebM of the visible tab, and capture diagnostics.
 
 ## Why Kuali
 
@@ -255,7 +256,7 @@ permissions in Kuali's configuration file.
 
 | Data | Handling |
 |---|---|
-| Raw audio | Processed in memory; not saved as an audio file |
+| Raw audio and screen capture | Processed in memory by default; optional local WAV, WebM, and diagnostic retention for browser meetings |
 | Transcripts and meeting metadata | Stored locally in Kuali's application-data directory |
 | Whisper model weights | Stored in the directory selected by the user |
 | LLM requests | Disabled by the **Summaries and tasks** switch; otherwise sent only to the configured provider |

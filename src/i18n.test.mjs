@@ -58,6 +58,18 @@ test("summaries and tasks have an explicit privacy switch", () => {
   assert.match(app, /btn-resummarize"\)\.hidden = live \|\| !summariesEnabled\(\)/);
 });
 
+test("local media retention is explicit and disabled unless selected", () => {
+  const html = readFileSync(new URL("./index.html", import.meta.url), "utf8");
+  const app = readFileSync(new URL("./app.js", import.meta.url), "utf8");
+  for (const id of ["cfg-web-save-audio", "cfg-web-save-screen", "cfg-web-save-diagnostics"]) {
+    assert.match(html, new RegExp(`id="${id}"`));
+    assert.doesNotMatch(html, new RegExp(`id="${id}"[^>]*checked`));
+  }
+  assert.match(app, /c\.meet\["save-audio"\] = \$\("cfg-web-save-audio"\)\.checked/);
+  assert.match(app, /c\.meet\["save-screen-recording"\] = \$\("cfg-web-save-screen"\)\.checked/);
+  assert.match(app, /c\.meet\["save-diagnostics"\] = \$\("cfg-web-save-diagnostics"\)\.checked/);
+});
+
 test("saved meetings expose an accessible index status and retry action", () => {
   const html = readFileSync(new URL("./index.html", import.meta.url), "utf8");
   const app = readFileSync(new URL("./app.js", import.meta.url), "utf8");

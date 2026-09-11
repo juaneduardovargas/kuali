@@ -12,8 +12,9 @@ extensión de navegador Kuali distribuidos desde este repositorio.
 Kuali no opera cuentas, publicidad, analítica ni un servicio de transcripción
 en la nube. La extensión envía el audio y los datos de los participantes
 únicamente a la aplicación Kuali que corre en tu propio equipo. Whisper
-transcribe el audio localmente. Kuali no vende información personal ni conserva
-el audio capturado como un archivo de audio.
+transcribe el audio localmente. Kuali no vende información personal. Las pistas
+de audio, la captura de pantalla y los diagnósticos técnicos sólo se conservan
+cuando habilitas explícitamente esos ajustes locales.
 
 Si configuras un proveedor de resúmenes, entregas por Discord o un webhook, la
 aplicación envía a ese servicio los datos descritos abajo porque tú se lo
@@ -38,8 +39,8 @@ atribuir hablantes, anunciar la grabación y entregar resultados.
 Kuali también guarda los ajustes que introduces. Estos pueden incluir el token
 del bot de Discord, usuario o ID de Discord, ubicación de modelos, vocabulario
 especial, proveedor de resumen y sus claves de API, y URLs y secretos de firma
-de webhooks. La extensión sólo guarda el puerto local usado para encontrar la
-aplicación de escritorio.
+de webhooks. La extensión sólo guarda el puerto local y el código de
+emparejamiento usados para encontrar y autenticar la aplicación de escritorio.
 
 ## Para qué se usa
 
@@ -94,9 +95,12 @@ extensión, el navegador elimina su preferencia de puerto conforme a su manejo
 normal de datos de extensiones. Los datos ya entregados a Discord, un proveedor
 o un webhook quedan bajo el control de ese servicio y deben borrarse allí.
 
-El audio PCM capturado se procesa en memoria y Kuali no lo conserva como
-archivo. El audio temporal desaparece al terminar el procesamiento o cerrar la
-aplicación.
+De forma predeterminada, el audio PCM se procesa en memoria y desaparece al
+terminar el procesamiento o cerrar la aplicación. Si habilitas la conservación
+local, Kuali guarda pistas WAV sincronizadas por participante, un WebM de la
+pestaña visible con el audio mezclado y/o diagnósticos JSONL saneados dentro de
+la carpeta de esa reunión. Esos archivos permanecen hasta que elimines la
+reunión o su carpeta; Kuali no los envía a proveedores de resumen ni webhooks.
 
 ## Aviso y consentimiento
 

@@ -24,6 +24,22 @@ export function encodeMeetingEvent(event) {
   });
 }
 
+export const SCREEN_RECORDING_WEBM = 1;
+
+export function encodeRecordingChunk(sequence, isFinal, format, bytes) {
+  if (!Number.isInteger(sequence) || sequence < 0) throw new RangeError("invalid recording sequence");
+  if (!Number.isInteger(format) || format < 0) throw new RangeError("invalid recording format");
+  const payload = bytes instanceof Uint8Array ? bytes : Uint8Array.from(bytes || []);
+  const out = new ArrayBuffer(16 + payload.byteLength);
+  const view = new DataView(out);
+  view.setUint32(0, 0x52454331, true);
+  view.setUint32(4, sequence >>> 0, true);
+  view.setUint32(8, isFinal ? 1 : 0, true);
+  view.setUint32(12, format >>> 0, true);
+  new Uint8Array(out, 16).set(payload);
+  return out;
+}
+
 export function mapFrameChannel(frameSlot, localChannel) {
   if (!Number.isInteger(frameSlot) || frameSlot < 0) throw new RangeError("invalid frame slot");
   if (!Number.isInteger(localChannel) || localChannel < 0 || localChannel >= 2048) {

@@ -25,6 +25,8 @@ Funciones:
 
 - transcripción en vivo dentro de la app Kuali;
 - nombres y canales separados cuando la plataforma los expone;
+- pistas WAV por participante, WebM de la pestaña visible y diagnósticos
+  saneados como opciones locales;
 - captura simultánea de varias reuniones compatibles;
 - cierre automático al salir o terminar la reunión;
 - biblioteca local, búsqueda, resúmenes, decisiones, preguntas y tareas; y
@@ -32,8 +34,11 @@ Funciones:
 
 Se necesita la app Kuali, gratuita y open source. La extensión sólo se conecta
 a Kuali mediante `127.0.0.1`, no tiene una nube operada por Kuali y no conserva
-el audio capturado como archivo. La transcripción sólo sale del equipo si
-configuras un proveedor de resúmenes, una entrega por Discord o un webhook.
+medios en el almacenamiento de la extensión. La app de escritorio sólo guarda
+audio, video de la pestaña o diagnósticos si habilitas esos ajustes locales.
+Esos archivos no se envían a un proveedor de IA ni webhook; la transcripción
+sólo sale del equipo si configuras un proveedor de resúmenes, una entrega por
+Discord o un webhook.
 
 Los servicios de reuniones pueden cambiar sus interfaces privadas. Teams y Zoom
 pueden tener captura, identidad o separación de hablantes incompletas en algunos

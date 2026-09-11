@@ -23,9 +23,9 @@ use serde::Deserialize;
 const NAME_FLAG: u32 = 0x8000_0000;
 const AUDIO_HEADER_BYTES: usize = 12;
 const NAMED_HEADER_BYTES: usize = 16;
+const RECORDING_HEADER_BYTES: usize = 16;
 
-/// `REC1` magic for combined meeting recordings sent over the same socket. This
-/// is not transcription audio and is discarded.
+/// `REC1` magic for combined meeting recordings sent over the same socket.
 const REC_MAGIC: u32 = 0x5245_4331;
 
 /// Whisper uses 16 kHz mono, which the wire provides directly.
@@ -45,13 +45,20 @@ pub struct AudioFrame {
     pub speaker_name: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordingFrame {
+    pub sequence: u32,
+    pub is_final: bool,
+    pub format: u32,
+    pub bytes: Vec<u8>,
+}
+
 /// Classified socket input.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Frame {
     Audio(AudioFrame),
     Event(MeetingEvent),
-    /// Combined recording ignored by Kuali, which transcribes per-channel audio.
-    Recording,
+    Recording(RecordingFrame),
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -96,7 +103,15 @@ pub fn decode_binary(bytes: &[u8]) -> Result<Frame, WireError> {
     // Check recordings first: their magic is a large positive integer that no
     // real channel can produce.
     if raw == REC_MAGIC {
-        return Ok(Frame::Recording);
+        if bytes.len() < RECORDING_HEADER_BYTES {
+            return Err(WireError::Truncated(bytes.len()));
+        }
+        return Ok(Frame::Recording(RecordingFrame {
+            sequence: u32_le(bytes, 4),
+            is_final: u32_le(bytes, 8) != 0,
+            format: u32_le(bytes, 12),
+            bytes: bytes[RECORDING_HEADER_BYTES..].to_vec(),
+        }));
     }
 
     let timestamp_ms = f64_le(bytes, 4);
@@ -237,7 +252,15 @@ mod tests {
         bytes.extend_from_slice(&1u32.to_le_bytes());
         bytes.extend_from_slice(&0u32.to_le_bytes());
         bytes.extend_from_slice(&0u32.to_le_bytes());
-        assert_eq!(decode_binary(&bytes), Ok(Frame::Recording));
+        assert_eq!(
+            decode_binary(&bytes),
+            Ok(Frame::Recording(RecordingFrame {
+                sequence: 1,
+                is_final: false,
+                format: 0,
+                bytes: Vec::new(),
+            }))
+        );
     }
 
     #[test]

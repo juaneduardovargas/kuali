@@ -154,6 +154,12 @@ impl MeetingIndexStatus {
 struct ActiveMeeting {
     meeting: Meeting,
     segmenter: Segmenter,
+    /// Present only for browser meetings whose local audio retention was
+    /// explicitly enabled before admission.
+    audio_archive: Option<kuali_store::AudioArchive>,
+    /// Lazily created by the first valid MediaRecorder chunk.
+    screen_recording: Option<kuali_store::ScreenRecordingArchive>,
+    screen_recording_enabled: bool,
     /// Ticks since admission; multiplying by 20 yields elapsed milliseconds.
     ticks: u64,
     text_channel_id: u64,
@@ -1001,10 +1007,21 @@ impl Engine {
         });
         let events = self.inner.web_voice_tx.clone();
         let pairing_token = config.pairing_token;
+        let preferences = kuali_meet::CapturePreferences {
+            save_audio: config.save_audio,
+            save_screen_recording: config.save_screen_recording,
+            save_diagnostics: config.save_diagnostics,
+        };
         let inner = Arc::clone(&self.inner);
         *running = Some(tokio::spawn(async move {
             tracing::info!("listening for web meetings on ws://{addr}/ingest");
-            kuali_meet::ingest::serve_on(listener, events, pairing_token).await;
+            kuali_meet::ingest::serve_on_with_preferences(
+                listener,
+                events,
+                pairing_token,
+                preferences,
+            )
+            .await;
             inner.web_ingest_ready.store(false, Ordering::Release);
             inner.emit(KualiEvent::WebMeetingsStatusChanged {
                 enabled: true,
@@ -2270,7 +2287,7 @@ async fn handle_session_event(inner: &Arc<Inner>, session: VoiceSessionKey, even
         }
         VoiceEvent::Audio { user_id, pcm } => {
             let samples = i16_to_f32(&pcm);
-            let (meeting_id, pushed) = {
+            let (meeting_id, pushed, archive_error) = {
                 let mut active = inner.active.lock();
                 let Some(active) = active.get_mut(&session) else {
                     return;
@@ -2279,16 +2296,103 @@ async fn handle_session_event(inner: &Arc<Inner>, session: VoiceSessionKey, even
                     return;
                 }
                 let now = active.now_ms();
+                let archive_error = active
+                    .audio_archive
+                    .as_mut()
+                    .and_then(|archive| archive.write_pcm(user_id, now, &pcm).err());
+                if archive_error.is_some() {
+                    active.audio_archive = None;
+                }
                 (
                     active.meeting.meta.id.clone(),
                     active.segmenter.push_continuous(user_id, now, &samples),
+                    archive_error,
                 )
             };
+            if let Some(error) = archive_error {
+                inner.emit(KualiEvent::error("audio local", error));
+            }
             if let Some(preview) = pushed.preview {
                 queue_preview_transcription(inner, &meeting_id, preview).await;
             }
             if let Some(segment) = pushed.final_segment {
                 queue_final_transcription(inner, &meeting_id, segment).await;
+            }
+        }
+        VoiceEvent::CaptureDiagnostic {
+            kind,
+            timestamp_ms,
+            speaker,
+            text,
+            detail,
+        } => {
+            let meeting_id = {
+                let active = inner.active.lock();
+                let Some(active) = active.get(&session) else {
+                    return;
+                };
+                active.meeting.meta.id.clone()
+            };
+            let record = serde_json::json!({
+                "kind": kind,
+                "ts": timestamp_ms,
+                "speaker": speaker,
+                "text": text,
+                "detail": detail,
+            });
+            if let Err(error) = kuali_store::append_capture_diagnostic(&meeting_id, &record) {
+                inner.emit(KualiEvent::error("diagnóstico de captura", error));
+            }
+        }
+        VoiceEvent::RecordingChunk {
+            sequence,
+            is_final,
+            format,
+            bytes,
+        } => {
+            let result = {
+                let mut active = inner.active.lock();
+                let Some(active) = active.get_mut(&session) else {
+                    return;
+                };
+                if active.ending || !active.screen_recording_enabled {
+                    return;
+                }
+                let meeting_id = active.meeting.meta.id.clone();
+                let result = if active.screen_recording.is_none() {
+                    if sequence != 0 {
+                        Err(kuali_store::StoreError::InvalidMedia(format!(
+                            "first screen chunk had sequence {sequence}"
+                        )))
+                    } else {
+                        kuali_store::ScreenRecordingArchive::new(&meeting_id, format).map(
+                            |archive| {
+                                active.screen_recording = Some(archive);
+                            },
+                        )
+                    }
+                } else {
+                    Ok(())
+                };
+                result
+                    .and_then(|()| {
+                        active
+                            .screen_recording
+                            .as_mut()
+                            .expect("screen archive created")
+                            .write_chunk(sequence, &bytes)
+                    })
+                    .and_then(|()| {
+                        if is_final {
+                            if let Some(archive) = active.screen_recording.take() {
+                                archive.finish()?;
+                            }
+                        }
+                        Ok(())
+                    })
+            };
+            if let Err(error) = result {
+                inner.emit(KualiEvent::error("grabación de pantalla", error));
             }
         }
         VoiceEvent::SpeakingChanged { user_id, speaking } => {
@@ -2846,6 +2950,17 @@ async fn start_meeting(
 
     let mut meeting = Meeting::new(meta.clone());
     prepare_discord_summary_delivery(&mut meeting, info.text_channel_id);
+    let audio_archive = if session.source == VoiceSource::Web && config.meet.save_audio {
+        match kuali_store::AudioArchive::new(&meta.id) {
+            Ok(archive) => Some(archive),
+            Err(error) => {
+                inner.emit(KualiEvent::error("audio local", error));
+                None
+            }
+        }
+    } else {
+        None
+    };
     {
         let _metadata = inner.metadata_mutation.lock();
         if let Err(e) = kuali_store::save(&meeting) {
@@ -2857,6 +2972,10 @@ async fn start_meeting(
             ActiveMeeting {
                 meeting,
                 segmenter: Segmenter::new(config.recording),
+                audio_archive,
+                screen_recording: None,
+                screen_recording_enabled: session.source == VoiceSource::Web
+                    && config.meet.save_screen_recording,
                 ticks: 0,
                 text_channel_id: info.text_channel_id,
                 ending: false,
@@ -2987,7 +3106,7 @@ async fn finish_meeting(inner: &Arc<Inner>, session: VoiceSessionKey) {
     // critical section. Delete checks `active` before taking this same lock, so
     // it either refuses while the meeting is live or runs after this save and
     // becomes authoritative; no late post-processing write can resurrect it.
-    let (active, mut may_create, mut final_snapshot_needs_retry) = {
+    let (mut active, mut may_create, mut final_snapshot_needs_retry) = {
         let _metadata = inner.metadata_mutation.lock();
         let Some(mut active) = inner.active.lock().remove(&session) else {
             finish_post_processing(inner);
@@ -3013,6 +3132,20 @@ async fn finish_meeting(inner: &Arc<Inner>, session: VoiceSessionKey) {
         };
         (active, may_create, needs_retry)
     };
+    if let Some(archive) = active.audio_archive.take() {
+        if let Err(error) = archive.finish() {
+            inner.emit(KualiEvent::error("audio local", error));
+        } else if let Err(error) = kuali_store::save_audio_manifest(&active.meeting) {
+            inner.emit(KualiEvent::error("audio local", error));
+        }
+    }
+    // An unexpected browser exit may omit the explicit final frame. Periodic
+    // MediaRecorder chunks are still useful, so finalize the partial file here.
+    if let Some(archive) = active.screen_recording.take() {
+        if let Err(error) = archive.finish() {
+            inner.emit(KualiEvent::error("grabación de pantalla", error));
+        }
+    }
     let memory_update = MemoryMaintenanceGuard::new(inner);
 
     // The model is shared and unloads only after the final session ends.
@@ -4424,6 +4557,9 @@ mod tests {
                 folder: None,
             }),
             segmenter: Segmenter::new(Default::default()),
+            audio_archive: None,
+            screen_recording: None,
+            screen_recording_enabled: false,
             ticks,
             text_channel_id: 2,
             ending: false,
@@ -5278,6 +5414,9 @@ mod tests {
                 folder: None,
             }),
             segmenter: Segmenter::new(Default::default()),
+            audio_archive: None,
+            screen_recording: None,
+            screen_recording_enabled: false,
             ticks: 0,
             text_channel_id: 0,
             ending: false,
@@ -5733,6 +5872,9 @@ mod tests {
             ActiveMeeting {
                 meeting,
                 segmenter: Segmenter::new(Default::default()),
+                audio_archive: None,
+                screen_recording: None,
+                screen_recording_enabled: false,
                 ticks: 100,
                 text_channel_id: 2,
                 ending: false,

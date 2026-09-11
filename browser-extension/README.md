@@ -110,9 +110,10 @@ unpacked installation remains supported for development and as a fallback.
 ## Privacy
 
 Capture requires an affirmative participant-notice confirmation and remains
-visible through an in-page indicator and `REC` toolbar badge. Audio goes only
-to the Kuali app on `127.0.0.1`; the extension retains no audio file. Read the
-complete [privacy policy](../PRIVACY.md).
+visible through an in-page indicator and `REC` toolbar badge. Data goes only to
+the Kuali app on `127.0.0.1`. Optional desktop settings can retain participant
+WAV tracks, a WebM of the visible tab, and sanitized diagnostics in the local
+meeting folder. Read the complete [privacy policy](../PRIVACY.md).
 
 ## License and provenance
 

@@ -14,3 +14,18 @@ export function meetingPresence(frameId, hadSelf, participants) {
     shouldScheduleStop: hadSelf && !selfPresent,
   };
 }
+
+export function shouldPromoteMixedFallback(
+  timestamp,
+  lastSeparateAudioAt,
+  fallbackStartedAt,
+  graceMs = 1_800,
+) {
+  const reference = Math.max(lastSeparateAudioAt || 0, fallbackStartedAt || 0);
+  return reference > 0 && timestamp - reference >= graceMs;
+}
+
+export function fallbackFramesAfterSeparateAudio(frames, lastSeparateAudioAt, overlapMs = 250) {
+  const after = lastSeparateAudioAt ? lastSeparateAudioAt + overlapMs : 0;
+  return frames.filter((frame) => frame.ts >= after);
+}

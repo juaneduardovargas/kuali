@@ -1,9 +1,19 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { encodeAudio, encodeMeetingEvent, mapFrameChannel } from "../src/protocol.js";
+import {
+  encodeAudio,
+  encodeMeetingEvent,
+  encodeRecordingChunk,
+  mapFrameChannel,
+  SCREEN_RECORDING_WEBM,
+} from "../src/protocol.js";
 import { healthUrl, isKualiHealthMessage } from "../src/health.js";
-import { meetingPresence } from "../src/lifecycle.js";
+import {
+  fallbackFramesAfterSeparateAudio,
+  meetingPresence,
+  shouldPromoteMixedFallback,
+} from "../src/lifecycle.js";
 import "../src/capture-policy.js";
 
 const capturePolicy = globalThis.KualiCapturePolicy;
@@ -14,6 +24,26 @@ test("audio frames match capture.v1 little-endian layout", () => {
   assert.equal(view.getUint32(0, true), 42);
   assert.equal(view.getFloat64(4, true), 1_718_000_000_456);
   assert.deepEqual([...new Float32Array(encoded, 12)], [-0.5, 0.25]);
+});
+
+test("recording chunks use the bounded REC1 envelope", () => {
+  const encoded = encodeRecordingChunk(7, true, SCREEN_RECORDING_WEBM, [1, 2, 3]);
+  const view = new DataView(encoded);
+  assert.equal(view.getUint32(0, true), 0x52454331);
+  assert.equal(view.getUint32(4, true), 7);
+  assert.equal(view.getUint32(8, true), 1);
+  assert.equal(view.getUint32(12, true), SCREEN_RECORDING_WEBM);
+  assert.deepEqual([...new Uint8Array(encoded, 16)], [1, 2, 3]);
+});
+
+test("mixed tab audio takes over only after separated audio stalls", () => {
+  assert.equal(shouldPromoteMixedFallback(2_799, 1_000, 500), false);
+  assert.equal(shouldPromoteMixedFallback(2_800, 1_000, 500), true);
+  assert.equal(shouldPromoteMixedFallback(5_000, 0, 0), false);
+  assert.deepEqual(
+    fallbackFramesAfterSeparateAudio([{ ts: 1_200 }, { ts: 1_249 }, { ts: 1_250 }], 1_000),
+    [{ ts: 1_250 }],
+  );
 });
 
 test("the health handshake only accepts Kuali on the configured loopback port", () => {

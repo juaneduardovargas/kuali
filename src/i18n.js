@@ -560,6 +560,15 @@ export const ENGLISH_TRANSLATIONS = Object.freeze({
   "Escuchar reuniones del navegador": "Listen to browser meetings",
   "Solo abre un receptor local; no expone nada a tu red.":
     "Only opens a local receiver; nothing is exposed to your network.",
+  "Guardar pistas de audio por participante": "Save audio tracks per participant",
+  "Crea archivos WAV locales y sincronizados dentro de la carpeta de cada reunión.":
+    "Creates local, synchronized WAV files inside each meeting folder.",
+  "Grabar la pestaña de la reunión": "Record the meeting tab",
+  "Guarda un WebM local de la pestaña con el audio mezclado que escuchas.":
+    "Saves a local WebM of the tab with the mixed audio you hear.",
+  "Guardar diagnóstico de captura": "Save capture diagnostics",
+  "Conserva eventos técnicos locales para investigar cortes y cambios de plataforma.":
+    "Keeps local technical events for investigating interruptions and platform changes.",
   "Puerto local de la extensión": "Extension local port",
   "Debe ser el mismo puerto configurado en la extensión. Por defecto: 9099.":
     "It must match the port configured in the extension. Default: 9099.",

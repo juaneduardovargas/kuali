@@ -23,5 +23,5 @@
 pub mod ingest;
 pub mod wire;
 
-pub use ingest::{default_addr, serve, IngestError, DEFAULT_PORT};
-pub use wire::{AudioFrame, Frame, MeetingEvent, WireError, CAPTURE_SAMPLE_RATE};
+pub use ingest::{default_addr, serve, CapturePreferences, IngestError, DEFAULT_PORT};
+pub use wire::{AudioFrame, Frame, MeetingEvent, RecordingFrame, WireError, CAPTURE_SAMPLE_RATE};

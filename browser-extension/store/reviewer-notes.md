@@ -20,9 +20,10 @@ not use a Kuali cloud account and no reviewer credentials are required.
    disappears, and the desktop app finalizes the local meeting record.
 
 The extension sends data only to `ws://127.0.0.1:<configured-port>`. Whisper
-transcription runs in the desktop app. The extension contains no remote code,
-analytics, advertising, account system, or Kuali-operated cloud service. It
-does not retain captured audio as a file.
+transcription and optional local media retention run in the desktop app. The
+extension contains no remote code, analytics, advertising, account system, or
+Kuali-operated cloud service, and does not retain meeting media in extension
+storage.
 
 For code review and reproducible tests, see:
 `https://github.com/igarrux/kuali/tree/main/browser-extension`.
