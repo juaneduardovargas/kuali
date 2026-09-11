@@ -175,6 +175,27 @@ test("Meet protocol names survive background-tab DOM placeholders", () => {
   assert.equal(capturePolicy.usableMeetParticipantName("Participante"), "");
 });
 
+test("Teams rejects navigation labels as participant names", () => {
+  assert.equal(capturePolicy.usableTeamsParticipantName("Laura Camila Lozano Rodriguez"), "Laura Camila Lozano Rodriguez");
+  assert.equal(capturePolicy.usableTeamsParticipantName("Chat de la llamada"), "");
+  assert.equal(capturePolicy.usableTeamsParticipantName("More options"), "");
+});
+
+test("Teams microphone capture follows the visible control when available", () => {
+  assert.equal(capturePolicy.meetMicrophoneMuted({ label: "Reactivar audio del micrófono" }), true);
+  assert.equal(capturePolicy.meetMicrophoneMuted({ label: "Desactivar audio del micrófono" }), false);
+  assert.equal(capturePolicy.shouldSendTeamsMicrophone({
+    trackEnabled: true,
+    trackMuted: false,
+    controlMuted: false,
+  }), true);
+  assert.equal(capturePolicy.shouldSendTeamsMicrophone({
+    trackEnabled: true,
+    trackMuted: false,
+    controlMuted: true,
+  }), false);
+});
+
 test("Meet remembers valid names by device ID across partial background updates", () => {
   const learned = capturePolicy.mergeMeetParticipantIdentity(null, {
     id: "devices/remote",

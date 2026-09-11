@@ -17,6 +17,7 @@ function createHarness({
   throwDecoderDecodeOnce = false,
   decodedSampleValue = 0,
   topLevel = false,
+  hostname = "meet.google.com",
 } = {}) {
   let now = 0;
   let nextInterval = 1;
@@ -325,7 +326,7 @@ function createHarness({
     TransformStream: FakeTransformStream,
     clearInterval() {},
     document,
-    location: { hostname: "meet.google.com" },
+    location: { hostname },
     navigator: {
       mediaDevices: {
         getUserMedia() {
@@ -424,6 +425,11 @@ function createHarness({
     flush,
     posts,
     pushEncodedFrame,
+    pushLocalTrackFrame(track, samples = new Float32Array(960).fill(0.08)) {
+      const processor = trackProcessors.find((candidate) => candidate.track === track);
+      assert(processor, "the local microphone track processor must be active");
+      processor.push(new FakeAudioData(now, samples));
+    },
     pushTrackFrame,
     sendControl,
     resolveAudioContextClose() {
@@ -456,6 +462,38 @@ function createHarness({
     window,
   };
 }
+
+test("Teams captures its existing sender track instead of opening a silent second microphone", async () => {
+  const harness = createHarness({
+    withPeerConnection: true,
+    topLevel: true,
+    hostname: "teams.microsoft.com",
+  });
+  const peer = new harness.window.RTCPeerConnection();
+  const microphone = new harness.FakeTrack("teams-sender-microphone");
+  microphone.label = "HD Pro Webcam C920";
+  peer.senders = [{
+    track: microphone,
+    getParameters: () => ({ encodings: [{ active: true }] }),
+  }];
+
+  await harness.controlAndWait("start");
+  assert.equal(harness.microphoneRequestCount, 0);
+  assert(
+    harness.posts.some((message) => message.type === "meeting-event"
+      && message.kind === "microphone-source"
+      && message.detail?.source === "teams-sender-track"),
+  );
+
+  for (let index = 0; index < 8; index += 1) {
+    harness.pushLocalTrackFrame(microphone);
+    await harness.flush();
+  }
+  assert(
+    harness.posts.some((message) => message.type === "audio" && message.channel === 1000),
+    "Teams sender PCM must reach the reserved local microphone channel",
+  );
+});
 
 async function prepareRoutedMeetReceiver(harness, trackId = "routed-remote-audio") {
   const peer = new harness.window.RTCPeerConnection();

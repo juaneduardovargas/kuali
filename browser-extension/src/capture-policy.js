@@ -82,6 +82,15 @@
     return name;
   }
 
+  /** Teams sometimes exposes navigation labels as if they were participant names. */
+  function usableTeamsParticipantName(value) {
+    const name = String(value || "").replace(/\s+/g, " ").trim();
+    if (!name || name.length > 100) return "";
+    if (/^(?:chat|call chat|meeting chat|chat de la llamada|chat da chamada|people|gente|personas|participants?|participantes?|more options|más opciones|mais opções)$/i.test(name)) return "";
+    if (/^(?:participant-avatar|voice-level-stream-outline|ai-interpreter-outline)$/i.test(name)) return "";
+    return name;
+  }
+
   /** Keep the best metadata learned for one stable Meet device ID. */
   function mergeMeetParticipantIdentity(previous, incoming) {
     const id = String(incoming?.id || previous?.id || "").trim();
@@ -482,6 +491,12 @@
     return !!trackEnabled && controlMuted === false;
   }
 
+  /** Teams exposes a useful action label, but the sender track is the fallback. */
+  function shouldSendTeamsMicrophone({ trackEnabled, trackMuted, controlMuted }) {
+    if (!trackEnabled || trackMuted) return false;
+    return controlMuted !== true;
+  }
+
   globalThis.KualiCapturePolicy = Object.freeze({
     MIC_CHANNEL,
     shouldCorrelateIdentity,
@@ -489,6 +504,7 @@
     rosterDetail,
     connectedTrackDetail,
     usableMeetParticipantName,
+    usableTeamsParticipantName,
     mergeMeetParticipantIdentity,
     meetParticipantIdentity,
     mergeMeetRoster,
@@ -504,5 +520,6 @@
     resolveMeetRouteIdentity,
     meetMicrophoneMuted,
     shouldSendMeetMicrophone,
+    shouldSendTeamsMicrophone,
   });
 })();

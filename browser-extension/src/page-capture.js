@@ -31,6 +31,7 @@
   let workletUrl = null;
   let micStream = null;
   let micStreamOwned = false;
+  let micHealthTimer = null;
   let localIdentity = null;
   let scanTimer = null;
   let activityTimer = null;
@@ -564,7 +565,33 @@
     return null;
   }
 
+  function teamsMicrophoneMutedFromControls() {
+    if (platform !== "microsoft_teams") return null;
+    for (const control of document.querySelectorAll("button,[role='button']")) {
+      if (control.disabled || control.getAttribute?.("aria-hidden") === "true") continue;
+      const style = getComputedStyle(control);
+      if (style.display === "none" || style.visibility === "hidden") continue;
+      if (control.getClientRects?.().length === 0) continue;
+      const label = clean([
+        control.getAttribute?.("aria-label"),
+        control.getAttribute?.("title"),
+        control.getAttribute?.("data-tid"),
+      ].filter(Boolean).join(" ")).toLocaleLowerCase();
+      if (!/(microphone|micrófono|microfono|microfone)/i.test(label)) continue;
+      const muted = capturePolicy.meetMicrophoneMuted({ label });
+      if (muted !== null) return muted;
+    }
+    return null;
+  }
+
   function shouldSendLocalMicrophone(track) {
+    if (platform === "microsoft_teams") {
+      return capturePolicy.shouldSendTeamsMicrophone({
+        trackEnabled: track.enabled,
+        trackMuted: track.muted,
+        controlMuted: teamsMicrophoneMutedFromControls(),
+      });
+    }
     if (platform !== "google_meet") return track.enabled && !track.muted;
     const now = performance.now();
     if (now - meetMicCheckedAt < 100) return meetMicAllowed;
@@ -1018,6 +1045,7 @@
       "[data-user-id]",
       "[data-tid*='participant']",
       "[data-tid*='video-tile']",
+      "[role='menuitem'][data-acc-element-id]",
       "[class*='participant']",
       "[class*='video-avatar']",
       "[class*='video-tile']",
@@ -1041,6 +1069,14 @@
     const selfMarker = tile.querySelector?.("[data-self-name]");
     const selfName = clean(selfMarker?.getAttribute?.("data-self-name"));
     if (selfName) return selfName;
+    if (platform === "microsoft_teams") {
+      for (const node of tile.querySelectorAll?.("[data-stream-type][data-tid]") || []) {
+        const value = capturePolicy.usableTeamsParticipantName(
+          node.getAttribute?.("data-tid") || node.textContent,
+        );
+        if (value) return value;
+      }
+    }
     const selectors = platform === "google_meet"
       ? ["span.notranslate"]
       : platform === "zoom"
@@ -1074,6 +1110,12 @@
     if (!tile) return false;
     if (tile.matches?.("[data-self-name],[data-is-self='true']")
       || tile.querySelector?.("[data-self-name],[data-is-self='true']")) return true;
+    if (platform === "microsoft_teams") {
+      return tile.matches?.("[role='menuitem'][data-acc-element-id]")
+        && tile.hasAttribute?.("data-acc-id")
+        && clean(tile.getAttribute?.("data-acc-id")) === ""
+        && tile.parentElement?.getAttribute?.("data-tid") === "stage-layout";
+    }
     if (platform !== "google_meet") return false;
     const tileId = clean(tile.getAttribute?.("data-participant-id"));
     if (tileId && meetUsers.get(tileId)?.isCurrentUser) return true;
@@ -1118,7 +1160,7 @@
       ? ["[data-participant-id]"]
       : platform === "zoom"
         ? ["[data-user-id]", ".video-avatar__avatar-footer"]
-        : ["[data-participant-id]", "[data-user-id]", "[data-tid*='participant']", "[data-tid*='roster']", "[data-tid*='video-tile']", "[role='listitem']"];
+        : ["[data-participant-id]", "[data-user-id]", "[data-tid*='participant']", "[data-tid*='roster']", "[data-tid*='video-tile']", "[data-tid='stage-layout'] [role='menuitem'][data-acc-element-id]"];
     const tiles = [];
     const seen = new Set();
     for (const node of document.querySelectorAll(selectors.join(","))) {
@@ -1144,7 +1186,7 @@
         if (!tile) continue;
         const style = getComputedStyle(outline);
         if (style.display === "none" || style.visibility === "hidden") continue;
-        let speaking = false;
+        let speaking = style.outlineStyle !== "none" && parseFloat(style.outlineWidth) > 0;
         for (let node = outline; node && node !== tile.parentElement; node = node.parentElement) {
           if (node.classList?.contains("vdi-frame-occlusion")) {
             speaking = true;
@@ -1746,6 +1788,10 @@
       && known?.forcedChannel !== MIC_CHANNEL
       && typeof MediaStreamTrackProcessor === "function"
       && typeof AudioData === "function";
+    const canProcessMicrophoneTrack = platform === "microsoft_teams"
+      && known?.forcedChannel === MIC_CHANNEL
+      && typeof MediaStreamTrackProcessor === "function"
+      && typeof AudioData === "function";
     if ((!running && !canPrewarmMeetLane) || remoteTracks.has(track.id) || track.readyState === "ended") return;
     if (!known || known.track !== track) return;
     const virtualMeetLane = canPrewarmMeetLane && !!known.receiver;
@@ -1758,10 +1804,7 @@
       ? known.sourceStream
       : new MediaStream([track]);
     if (
-      platform === "google_meet"
-      && known.forcedChannel !== MIC_CHANNEL
-      && typeof MediaStreamTrackProcessor === "function"
-      && typeof AudioData === "function"
+      canPrewarmMeetLane || canProcessMicrophoneTrack
     ) {
       const trackProcessor = new MediaStreamTrackProcessor({ track });
       const entry = {
@@ -1905,12 +1948,19 @@
     // Meet must keep its receiver lanes separate even when it currently exposes
     // only one of them. Labelling that lane as "Sala" would hide the exact
     // participant mapping and destroy overlapping-speaker information. Zoom
-    // and Teams retain their explicit mixed fallback for now.
-    const definitelyMixed = platform !== "google_meet"
+    // retains its explicit mixed fallback. Teams now exposes participant tiles
+    // that can be correlated directly, including in the two-person layout.
+    const definitelyMixed = platform === "zoom"
       && channel !== MIC_CHANNEL
       && remoteOnly.length === 1
       && rosterSize > 1;
-    if (definitelyMixed) {
+    const onlyTeamsRemote = platform === "microsoft_teams"
+      ? identitySnapshot().roster.filter(({ identity }) => !identity.isSelf)
+      : [];
+    if (onlyTeamsRemote.length === 1) {
+      bind(channel, onlyTeamsRemote[0].identity);
+      post("audio", { channel, ts: Date.now(), pcm: Array.from(samples) });
+    } else if (definitelyMixed) {
       bindMixed(channel);
     } else if (!voteForIdentity(channel)) {
       entry.pending.push({ channel, ts: Date.now(), pcm: Array.from(samples) });
@@ -1993,6 +2043,24 @@
     return navigator.mediaDevices.getUserMedia({ audio: true, video: false });
   }
 
+  function localAudioSenderTrack() {
+    const candidates = [];
+    for (const peer of observedPeers) {
+      for (const sender of peer.getSenders?.() || []) {
+        const track = sender.track;
+        if (track?.kind !== "audio" || track.readyState !== "live") continue;
+        const parameters = sender.getParameters?.() || {};
+        const encodings = parameters.encodings || [];
+        const active = encodings.length === 0 || encodings.some((encoding) => encoding.active !== false);
+        candidates.push({ track, active, label: clean(track.label).toLocaleLowerCase() });
+      }
+    }
+    return candidates.find((candidate) => candidate.active && /mic|micro|input/.test(candidate.label))?.track
+      || candidates.find((candidate) => candidate.active)?.track
+      || candidates[0]?.track
+      || null;
+  }
+
   function acquirePendingMicrophoneRequest(meetSenderTrack) {
     if (pendingMicrophoneRequest) return pendingMicrophoneRequest;
     const request = {
@@ -2046,6 +2114,8 @@
     scanTimer = null;
     clearInterval(activityTimer);
     activityTimer = null;
+    clearInterval(micHealthTimer);
+    micHealthTimer = null;
     if (micStreamOwned) {
       for (const track of micStream?.getTracks?.() || []) track.stop();
     }
@@ -2055,42 +2125,41 @@
 
   async function startMic(intent, signal) {
     try {
-      let meetSenderTrack = null;
-      if (platform === "google_meet") {
-        const candidates = [];
-        for (const peer of observedPeers) {
-          for (const sender of peer.getSenders?.() || []) {
-            const track = sender.track;
-            if (track?.kind !== "audio" || track.readyState !== "live") continue;
-            const parameters = sender.getParameters?.() || {};
-            const active = !(parameters.encodings || []).some((encoding) => encoding.active === false);
-            candidates.push({ track, active, label: clean(track.label).toLocaleLowerCase() });
-          }
+      const senderTrack = ["google_meet", "microsoft_teams"].includes(platform)
+        ? localAudioSenderTrack()
+        : null;
+      let nextMicStream = null;
+      let ownsMicStream = true;
+      let microphoneSource = "device-stream";
+      let microphoneRequest = null;
+      if (platform === "microsoft_teams" && senderTrack) {
+        nextMicStream = new MediaStream([senderTrack]);
+        ownsMicStream = false;
+        microphoneSource = "teams-sender-track";
+      } else {
+        microphoneRequest = acquirePendingMicrophoneRequest(senderTrack);
+        const microphoneOutcome = await awaitCaptureStep(microphoneRequest.promise, signal);
+        if (microphoneOutcome.cancelled) return false;
+        const { stream, error } = microphoneOutcome.value;
+        nextMicStream = stream;
+        if (error) {
+          if (pendingMicrophoneRequest === microphoneRequest) pendingMicrophoneRequest = null;
+          throw error;
         }
-        meetSenderTrack = candidates.find((candidate) => candidate.active && /mic|micro|input/.test(candidate.label))?.track
-          || candidates.find((candidate) => candidate.active)?.track
-          || candidates[0]?.track
-          || null;
-      }
-      const microphoneRequest = acquirePendingMicrophoneRequest(meetSenderTrack);
-      const microphoneOutcome = await awaitCaptureStep(microphoneRequest.promise, signal);
-      if (microphoneOutcome.cancelled) return false;
-      const { stream: nextMicStream, error } = microphoneOutcome.value;
-      if (error) {
-        if (pendingMicrophoneRequest === microphoneRequest) pendingMicrophoneRequest = null;
-        throw error;
       }
       if (!captureIntentIsCurrent(intent, signal) || !running) {
-        if (!captureDesired && pendingMicrophoneRequest === microphoneRequest) {
+        if (ownsMicStream && !captureDesired && pendingMicrophoneRequest === microphoneRequest) {
           for (const track of nextMicStream?.getTracks?.() || []) track.stop();
           pendingMicrophoneRequest = null;
         }
         return false;
       }
-      microphoneRequest.claimed = true;
-      if (pendingMicrophoneRequest === microphoneRequest) pendingMicrophoneRequest = null;
+      if (microphoneRequest) {
+        microphoneRequest.claimed = true;
+        if (pendingMicrophoneRequest === microphoneRequest) pendingMicrophoneRequest = null;
+      }
       micStream = nextMicStream;
-      micStreamOwned = true;
+      micStreamOwned = ownsMicStream;
       const currentMeetUser = platform === "google_meet"
         ? [...meetUsers.values()].find((user) => user.isCurrentUser)
         : null;
@@ -2101,7 +2170,39 @@
         });
       localIdentity = self;
       sendRosterState(identitySnapshot(true));
-      for (const track of micStream.getAudioTracks()) captureTrack(track, self, MIC_CHANNEL, micStream);
+      for (const track of micStream.getAudioTracks()) {
+        captureTrack(track, self, MIC_CHANNEL, micStream);
+        meetingEvent("microphone-source", {
+          channel: MIC_CHANNEL,
+          source: microphoneSource,
+          enabled: !!track.enabled,
+          muted: !!track.muted,
+          readyState: track.readyState || null,
+        }, self.name);
+        let previousPcmFrames = 0;
+        clearInterval(micHealthTimer);
+        micHealthTimer = setInterval(() => {
+          if (!running) return;
+          const entry = remoteTracks.get(track.id);
+          const pcmFrames = entry?.pcmFrames || 0;
+          const allowed = shouldSendLocalMicrophone(track);
+          meetingEvent("microphone-health", {
+            channel: MIC_CHANNEL,
+            source: microphoneSource,
+            status: !entry
+              ? "capture-missing"
+              : (!allowed ? "gated" : (pcmFrames > previousPcmFrames ? "flowing" : "no-audible-pcm")),
+            captureMethod: entry?.captureMethod || null,
+            enabled: !!track.enabled,
+            muted: !!track.muted,
+            readyState: track.readyState || null,
+            pcmFrames,
+            blockedFrames: entry?.blockedFrames || 0,
+            peak: entry?.peak || 0,
+          }, self.name);
+          previousPcmFrames = pcmFrames;
+        }, 5_000);
+      }
       return true;
     } catch (error) {
       if (!captureIntentIsCurrent(intent, signal) || !running) return false;
