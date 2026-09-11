@@ -16,6 +16,10 @@ import {
   meetingPresence,
   shouldPromoteMixedFallback,
 } from "./lifecycle.js";
+import {
+  LOCAL_MICROPHONE_CHANNEL,
+  shouldMixLocalMicrophone,
+} from "./recording-audio.js";
 
 const DEFAULT_PORT = 9099;
 const HEALTH_TIMEOUT_MS = 900;
@@ -101,16 +105,21 @@ async function ensureOffscreen() {
 }
 
 async function startMixedFallback(tabId, state) {
-  if (!state.fallbackStreamId) return;
+  const streamId = state.fallbackStreamId;
+  if (!streamId) return;
   try {
     await ensureOffscreen();
     const result = await chrome.runtime.sendMessage({
       type: "mixed-capture-start",
       tabId,
-      streamId: state.fallbackStreamId,
+      streamId,
       recordScreen: state.capture.screen === true,
     });
     if (result?.ok === false) throw new Error(result.error);
+    if (state.status !== "capturing" || state.fallbackStreamId !== streamId) {
+      await chrome.runtime.sendMessage({ type: "mixed-capture-stop" }).catch(() => {});
+      return;
+    }
     state.fallbackActive = true;
     state.fallbackStartedAt = Date.now();
   } catch (error) {
@@ -375,7 +384,7 @@ async function start(tabId) {
     state.status = "waiting";
     publish(tabId);
   };
-  socket.onmessage = (message) => {
+  socket.onmessage = async (message) => {
     if (state.socket !== socket) return;
     try {
       const response = JSON.parse(message.data);
@@ -410,8 +419,12 @@ async function start(tabId) {
         }
       }, 20_000);
       publish(tabId);
-      sendControl(tabId, state, "start");
-      if (needsMixedFallback(state.info.platform)) startMixedFallback(tabId, state);
+      // Build the recording graph before page capture starts. This prevents the
+      // first local-microphone buffer from racing ahead of the offscreen mixer.
+      if (needsMixedFallback(state.info.platform)) await startMixedFallback(tabId, state);
+      if (state.socket === socket && state.status === "capturing") {
+        sendControl(tabId, state, "start");
+      }
     } catch (_) {}
   };
   socket.onerror = () => {
@@ -533,6 +546,19 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
           preferPageAudio(tabId, state);
         }
         socket.send(encodeAudio(channel, event.ts || Date.now(), event.pcm));
+        if (shouldMixLocalMicrophone({
+          localChannel: event.channel,
+          captureScreen: state.capture.screen,
+          fallbackActive: state.fallbackActive,
+        })) {
+          chrome.runtime.sendMessage({
+            type: "recording-microphone-pcm",
+            tabId,
+            ts: event.ts || Date.now(),
+            sampleRate: LOCAL_MICROPHONE_SAMPLE_RATE,
+            pcm: event.pcm,
+          }).catch(() => {});
+        }
       } else if (event.type === "meeting-event") {
         const detail = event.detail ? { ...event.detail } : null;
         if (detail && Number.isInteger(detail.channel)) {
