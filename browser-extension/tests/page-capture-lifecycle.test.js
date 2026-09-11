@@ -110,15 +110,15 @@ function createHarness({
   class FakeAudioData {
     constructor(timestamp, samples = new Float32Array(960)) {
       this.timestamp = timestamp;
-      this.samples = samples;
-      this.numberOfFrames = samples.length;
-      this.numberOfChannels = 1;
+      this.planes = Array.isArray(samples) ? samples : [samples];
+      this.numberOfFrames = this.planes[0].length;
+      this.numberOfChannels = this.planes.length;
       this.sampleRate = 48_000;
       this.closed = false;
     }
 
-    copyTo(target) {
-      target.set(this.samples);
+    copyTo(target, { planeIndex = 0 } = {}) {
+      target.set(this.planes[planeIndex]);
     }
 
     close() {
@@ -455,6 +455,11 @@ function createHarness({
     flush,
     posts,
     pushEncodedFrame,
+    pushLocalTrackFrame(track, samples = new Float32Array(960).fill(0.08)) {
+      const processor = trackProcessors.find((candidate) => candidate.track === track);
+      assert(processor, "the local microphone track processor must be active");
+      processor.push(new FakeAudioData(now, samples));
+    },
     pushTrackFrame,
     sendControl,
     resolveAudioContextClose() {
@@ -515,14 +520,25 @@ test("Teams reopens the exact sender device for readable microphone PCM", async 
       && message.kind === "microphone-source"
       && message.detail?.source === "selected-device-stream"),
   );
-  for (let attempt = 0; attempt < 4 && harness.audioWorkletNodes.length === 0; attempt += 1) {
+  for (let attempt = 0; attempt < 4
+    && !harness.trackProcessors.some((processor) => processor.track.id === "local-mic"); attempt += 1) {
     await harness.flush();
   }
-  const microphoneNode = harness.audioWorkletNodes.find((node) => node.name === "kuali-pcm");
-  assert(microphoneNode, "the selected microphone must be connected to the PCM worklet");
-  assert.equal(microphoneNode.options.channelCountMode, "max");
-  assert.equal(microphoneNode.options.channelInterpretation, "discrete");
-  assert.notEqual(microphoneNode.options.channelCount, 1);
+  const microphoneProcessor = harness.trackProcessors.find((processor) => processor.track.id === "local-mic");
+  assert(microphoneProcessor, "the fresh microphone stream must use the native track processor");
+  for (let index = 0; index < 8; index += 1) {
+    harness.pushLocalTrackFrame(microphoneProcessor.track, [
+      new Float32Array(960),
+      new Float32Array(960).fill(0.08),
+    ]);
+    await harness.flush();
+  }
+  const microphoneAudio = harness.posts.find((message) => message.type === "audio" && message.channel === 1000);
+  assert(microphoneAudio, "native microphone PCM must reach the reserved local channel");
+  assert(
+    microphoneAudio.pcm.some((sample) => Math.abs(sample - 0.08) < 1e-6),
+    "speech present only on the second webcam channel must survive",
+  );
 });
 
 async function prepareRoutedMeetReceiver(harness, trackId = "routed-remote-audio") {

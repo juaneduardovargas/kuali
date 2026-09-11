@@ -1693,12 +1693,17 @@
         const route = meetFrame?.route || null;
         const mono = new Float32Array(audioData.numberOfFrames);
         const plane = new Float32Array(audioData.numberOfFrames);
+        let selectedEnergy = -1;
         for (let channel = 0; channel < audioData.numberOfChannels; channel += 1) {
           audioData.copyTo(plane, { planeIndex: channel, format: "f32-planar" });
-          for (let index = 0; index < mono.length; index += 1) mono[index] += plane[index];
-        }
-        if (audioData.numberOfChannels > 1) {
-          for (let index = 0; index < mono.length; index += 1) mono[index] /= audioData.numberOfChannels;
+          let energy = 0;
+          for (let index = 0; index < plane.length; index += 1) {
+            energy += plane[index] * plane[index];
+          }
+          if (energy > selectedEnergy) {
+            mono.set(plane);
+            selectedEnergy = energy;
+          }
         }
         let peak = 0;
         for (const sample of mono) peak = Math.max(peak, Math.abs(sample));
@@ -1788,6 +1793,13 @@
       && known?.forcedChannel !== MIC_CHANNEL
       && typeof MediaStreamTrackProcessor === "function"
       && typeof AudioData === "function";
+    // A fresh getUserMedia microphone can be live while Chrome feeds no blocks
+    // through a MediaStreamAudioSourceNode when Teams already owns the same USB
+    // device. Read that track directly and leave Web Audio as the compatibility
+    // fallback for browsers without audio TrackProcessor support.
+    const canProcessLocalMicrophone = known?.forcedChannel === MIC_CHANNEL
+      && typeof MediaStreamTrackProcessor === "function"
+      && typeof AudioData === "function";
     if ((!running && !canPrewarmMeetLane) || remoteTracks.has(track.id) || track.readyState === "ended") return;
     if (!known || known.track !== track) return;
     const virtualMeetLane = canPrewarmMeetLane && !!known.receiver;
@@ -1799,7 +1811,7 @@
       && known.sourceStream.getAudioTracks().some((candidate) => candidate === track)
       ? known.sourceStream
       : new MediaStream([track]);
-    if (canPrewarmMeetLane) {
+    if (canPrewarmMeetLane || canProcessLocalMicrophone) {
       const trackProcessor = new MediaStreamTrackProcessor({ track });
       const entry = {
         channel,
@@ -2160,6 +2172,7 @@
       localIdentity = self;
       sendRosterState(identitySnapshot(true));
       for (const track of micStream.getAudioTracks()) {
+        const settings = track.getSettings?.() || {};
         captureTrack(track, self, MIC_CHANNEL, micStream);
         meetingEvent("microphone-source", {
           channel: MIC_CHANNEL,
@@ -2167,6 +2180,10 @@
           enabled: !!track.enabled,
           muted: !!track.muted,
           readyState: track.readyState || null,
+          sampleRate: Number(settings.sampleRate) || null,
+          channelCount: Number(settings.channelCount) || null,
+          trackProcessorAvailable: typeof MediaStreamTrackProcessor === "function"
+            && typeof AudioData === "function",
         }, self.name);
         let previousPcmFrames = 0;
         clearInterval(micHealthTimer);
@@ -2185,6 +2202,8 @@
             enabled: !!track.enabled,
             muted: !!track.muted,
             readyState: track.readyState || null,
+            contextState: context?.state || null,
+            sourceFrames: entry?.sourceFrames || 0,
             pcmFrames,
             blockedFrames: entry?.blockedFrames || 0,
             peak: entry?.peak || 0,
