@@ -559,6 +559,8 @@ fn diagnostic_event(kind: &str) -> bool {
             | "active-speakers"
             | "capture-options"
             | "capture-fallback"
+            | "microphone-source"
+            | "microphone-health"
     )
 }
 
@@ -1342,6 +1344,37 @@ mod tests {
                 assert_eq!(detail["captureLanes"][0]["channel"], 7);
             }
             other => panic!("expected CaptureDiagnostic, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn microphone_health_events_are_retained_for_local_diagnostics() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut session = Session::new(
+            MeetingParams {
+                platform: "microsoft_teams".into(),
+                native_meeting_id: "teams-test".into(),
+            },
+            CapturePreferences {
+                save_diagnostics: true,
+                ..Default::default()
+            },
+        );
+
+        for kind in ["microphone-source", "microphone-health"] {
+            on_text(
+                &format!(
+                    r#"{{"kind":"{kind}","ts":42,"detail":{{"channel":1000,"status":"flowing"}}}}"#
+                ),
+                &mut session,
+                &tx,
+            );
+            match rx.try_recv() {
+                Ok(VoiceEvent::CaptureDiagnostic { kind: actual, .. }) => {
+                    assert_eq!(actual, kind);
+                }
+                other => panic!("expected microphone CaptureDiagnostic, got {other:?}"),
+            }
         }
     }
 

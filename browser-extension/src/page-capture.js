@@ -1788,10 +1788,6 @@
       && known?.forcedChannel !== MIC_CHANNEL
       && typeof MediaStreamTrackProcessor === "function"
       && typeof AudioData === "function";
-    const canProcessMicrophoneTrack = platform === "microsoft_teams"
-      && known?.forcedChannel === MIC_CHANNEL
-      && typeof MediaStreamTrackProcessor === "function"
-      && typeof AudioData === "function";
     if ((!running && !canPrewarmMeetLane) || remoteTracks.has(track.id) || track.readyState === "ended") return;
     if (!known || known.track !== track) return;
     const virtualMeetLane = canPrewarmMeetLane && !!known.receiver;
@@ -1803,9 +1799,7 @@
       && known.sourceStream.getAudioTracks().some((candidate) => candidate === track)
       ? known.sourceStream
       : new MediaStream([track]);
-    if (
-      canPrewarmMeetLane || canProcessMicrophoneTrack
-    ) {
+    if (canPrewarmMeetLane) {
       const trackProcessor = new MediaStreamTrackProcessor({ track });
       const entry = {
         channel,
@@ -1854,9 +1848,11 @@
       numberOfInputs: 1,
       numberOfOutputs: 1,
       outputChannelCount: [1],
-      channelCount: 1,
-      channelCountMode: "explicit",
-      channelInterpretation: "speakers",
+      // Preserve every physical microphone channel until the worklet chooses
+      // the sample with signal. Forcing a mono input here can cancel a stereo
+      // webcam pair before pcm-worklet.js gets a chance to inspect it.
+      channelCountMode: "max",
+      channelInterpretation: "discrete",
     });
     source.connect(processor);
     // The worklet only reads its input and leaves its output silent. Connecting
@@ -2029,10 +2025,13 @@
     const deviceId = clean(meetSenderTrack?.getSettings?.().deviceId);
     if (deviceId) {
       try {
-        return await navigator.mediaDevices.getUserMedia({
-          audio: { deviceId: { exact: deviceId } },
-          video: false,
-        });
+        return {
+          stream: await navigator.mediaDevices.getUserMedia({
+            audio: { deviceId: { exact: deviceId } },
+            video: false,
+          }),
+          source: "selected-device-stream",
+        };
       } catch (error) {
         if (!captureDesired) throw error;
         // Meet can replace a device while joining. Falling back to the current
@@ -2040,7 +2039,10 @@
       }
     }
     if (!captureDesired) throw new Error("Capture was cancelled before opening the microphone");
-    return navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+    return {
+      stream: await navigator.mediaDevices.getUserMedia({ audio: true, video: false }),
+      source: "default-device-stream",
+    };
   }
 
   function localAudioSenderTrack() {
@@ -2068,8 +2070,8 @@
       promise: null,
     };
     request.promise = Promise.resolve(openLocalMicrophone(meetSenderTrack)).then(
-      (stream) => ({ stream, error: null }),
-      (error) => ({ stream: null, error }),
+      ({ stream, source }) => ({ stream, source, error: null }),
+      (error) => ({ stream: null, source: null, error }),
     );
     pendingMicrophoneRequest = request;
     request.promise.then(({ stream }) => {
@@ -2128,38 +2130,25 @@
       const senderTrack = ["google_meet", "microsoft_teams"].includes(platform)
         ? localAudioSenderTrack()
         : null;
-      let nextMicStream = null;
-      let ownsMicStream = true;
-      let microphoneSource = "device-stream";
-      let microphoneRequest = null;
-      if (platform === "microsoft_teams" && senderTrack) {
-        nextMicStream = new MediaStream([senderTrack]);
-        ownsMicStream = false;
-        microphoneSource = "teams-sender-track";
-      } else {
-        microphoneRequest = acquirePendingMicrophoneRequest(senderTrack);
-        const microphoneOutcome = await awaitCaptureStep(microphoneRequest.promise, signal);
-        if (microphoneOutcome.cancelled) return false;
-        const { stream, error } = microphoneOutcome.value;
-        nextMicStream = stream;
-        if (error) {
-          if (pendingMicrophoneRequest === microphoneRequest) pendingMicrophoneRequest = null;
-          throw error;
-        }
+      const microphoneRequest = acquirePendingMicrophoneRequest(senderTrack);
+      const microphoneOutcome = await awaitCaptureStep(microphoneRequest.promise, signal);
+      if (microphoneOutcome.cancelled) return false;
+      const { stream: nextMicStream, source: microphoneSource, error } = microphoneOutcome.value;
+      if (error) {
+        if (pendingMicrophoneRequest === microphoneRequest) pendingMicrophoneRequest = null;
+        throw error;
       }
       if (!captureIntentIsCurrent(intent, signal) || !running) {
-        if (ownsMicStream && !captureDesired && pendingMicrophoneRequest === microphoneRequest) {
+        if (!captureDesired && pendingMicrophoneRequest === microphoneRequest) {
           for (const track of nextMicStream?.getTracks?.() || []) track.stop();
           pendingMicrophoneRequest = null;
         }
         return false;
       }
-      if (microphoneRequest) {
-        microphoneRequest.claimed = true;
-        if (pendingMicrophoneRequest === microphoneRequest) pendingMicrophoneRequest = null;
-      }
+      microphoneRequest.claimed = true;
+      if (pendingMicrophoneRequest === microphoneRequest) pendingMicrophoneRequest = null;
       micStream = nextMicStream;
-      micStreamOwned = ownsMicStream;
+      micStreamOwned = true;
       const currentMeetUser = platform === "google_meet"
         ? [...meetUsers.values()].find((user) => user.isCurrentUser)
         : null;

@@ -29,7 +29,9 @@ function createHarness({
   const trackProcessors = [];
   const audioContexts = [];
   const audioContextCloseResolvers = [];
+  const audioWorkletNodes = [];
   const microphoneResolvers = [];
+  const microphoneConstraints = [];
   let microphoneRequestCount = 0;
   let decoderDecodeThrowsRemaining = throwDecoderDecodeOnce ? 1 : 0;
   let notifyAudioContextCloseRequested;
@@ -49,6 +51,7 @@ function createHarness({
       this.enabled = true;
       this.muted = false;
       this.readyState = "live";
+      this.settings = {};
       this.listeners = new Map();
     }
 
@@ -56,6 +59,10 @@ function createHarness({
       const current = this.listeners.get(type) || [];
       current.push(listener);
       this.listeners.set(type, current);
+    }
+
+    getSettings() {
+      return this.settings;
     }
 
     end() {
@@ -184,6 +191,13 @@ function createHarness({
       return Promise.resolve();
     }
 
+    createMediaStreamSource() {
+      return {
+        connect() {},
+        disconnect() {},
+      };
+    }
+
     close() {
       this.state = "closed";
       notifyAudioContextCloseRequested();
@@ -192,6 +206,19 @@ function createHarness({
       }
       return Promise.resolve();
     }
+  }
+
+  class FakeAudioWorkletNode {
+    constructor(_context, name, options) {
+      this.name = name;
+      this.options = options;
+      this.port = { onmessage: null };
+      audioWorkletNodes.push(this);
+    }
+
+    connect() {}
+
+    disconnect() {}
   }
 
   class FakeMediaStream {
@@ -307,6 +334,7 @@ function createHarness({
   const sandbox = {
     AbortController,
     AudioContext: FakeAudioContext,
+    AudioWorkletNode: FakeAudioWorkletNode,
     AudioData: FakeAudioData,
     AudioDecoder: FakeAudioDecoder,
     EncodedAudioChunk: FakeEncodedAudioChunk,
@@ -329,8 +357,9 @@ function createHarness({
     location: { hostname },
     navigator: {
       mediaDevices: {
-        getUserMedia() {
+        getUserMedia(constraints) {
           microphoneRequestCount += 1;
+          microphoneConstraints.push(constraints);
           notifyMicrophoneRequested();
           if (deferMicrophone) {
             return new Promise((resolve, reject) => microphoneResolvers.push({ resolve, reject }));
@@ -419,17 +448,13 @@ function createHarness({
     FakeReceiver,
     FakeTrack,
     audioContexts,
+    audioWorkletNodes,
     decoders,
     createCollectionChannel,
     controlAndWait,
     flush,
     posts,
     pushEncodedFrame,
-    pushLocalTrackFrame(track, samples = new Float32Array(960).fill(0.08)) {
-      const processor = trackProcessors.find((candidate) => candidate.track === track);
-      assert(processor, "the local microphone track processor must be active");
-      processor.push(new FakeAudioData(now, samples));
-    },
     pushTrackFrame,
     sendControl,
     resolveAudioContextClose() {
@@ -457,13 +482,14 @@ function createHarness({
     get microphoneRequestCount() {
       return microphoneRequestCount;
     },
+    microphoneConstraints,
     trackProcessors,
     transforms,
     window,
   };
 }
 
-test("Teams captures its existing sender track instead of opening a silent second microphone", async () => {
+test("Teams reopens the exact sender device for readable microphone PCM", async () => {
   const harness = createHarness({
     withPeerConnection: true,
     topLevel: true,
@@ -472,27 +498,31 @@ test("Teams captures its existing sender track instead of opening a silent secon
   const peer = new harness.window.RTCPeerConnection();
   const microphone = new harness.FakeTrack("teams-sender-microphone");
   microphone.label = "HD Pro Webcam C920";
+  microphone.settings.deviceId = "c920-device";
   peer.senders = [{
     track: microphone,
     getParameters: () => ({ encodings: [{ active: true }] }),
   }];
 
   await harness.controlAndWait("start");
-  assert.equal(harness.microphoneRequestCount, 0);
+  assert.equal(harness.microphoneRequestCount, 1);
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(harness.microphoneConstraints[0])),
+    { audio: { deviceId: { exact: "c920-device" } }, video: false },
+  );
   assert(
     harness.posts.some((message) => message.type === "meeting-event"
       && message.kind === "microphone-source"
-      && message.detail?.source === "teams-sender-track"),
+      && message.detail?.source === "selected-device-stream"),
   );
-
-  for (let index = 0; index < 8; index += 1) {
-    harness.pushLocalTrackFrame(microphone);
+  for (let attempt = 0; attempt < 4 && harness.audioWorkletNodes.length === 0; attempt += 1) {
     await harness.flush();
   }
-  assert(
-    harness.posts.some((message) => message.type === "audio" && message.channel === 1000),
-    "Teams sender PCM must reach the reserved local microphone channel",
-  );
+  const microphoneNode = harness.audioWorkletNodes.find((node) => node.name === "kuali-pcm");
+  assert(microphoneNode, "the selected microphone must be connected to the PCM worklet");
+  assert.equal(microphoneNode.options.channelCountMode, "max");
+  assert.equal(microphoneNode.options.channelInterpretation, "discrete");
+  assert.notEqual(microphoneNode.options.channelCount, 1);
 });
 
 async function prepareRoutedMeetReceiver(harness, trackId = "routed-remote-audio") {
@@ -973,7 +1003,9 @@ test("stop cancels a pending microphone start and closes the late stream", async
     getAudioTracks: () => [microphoneTrack],
     getTracks: () => [microphoneTrack],
   });
-  await harness.flush();
+  for (let attempt = 0; attempt < 4 && microphoneTrack.readyState === "live"; attempt += 1) {
+    await harness.flush();
+  }
 
   assert.equal(microphoneTrack.readyState, "ended");
 });
