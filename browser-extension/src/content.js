@@ -86,7 +86,14 @@ window.addEventListener("message", (event) => {
   sendRuntimeMessage({ type: "capture-event", event: event.data });
 });
 
-chrome.runtime.onMessage.addListener((message) => {
+chrome.runtime.onMessage.addListener((message, _sender, reply) => {
+  if (message?.type === "capture-identify") {
+    const info = meetingInfo();
+    reply(window === window.top
+      ? { ...info, title: document.title }
+      : { platform: null });
+    return false;
+  }
   if (message?.type === "capture-control") {
     window.postMessage({
       protocol: TO_PAGE,

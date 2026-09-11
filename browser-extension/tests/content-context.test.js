@@ -57,3 +57,61 @@ test("an invalidated extension context cannot escape the content-script bridge",
   // after the listener returns.
   await Promise.resolve();
 });
+
+test("the content script can re-register a Teams tab after a worker restart", () => {
+  let runtimeListener = null;
+  const window = {
+    top: null,
+    addEventListener() {},
+    postMessage() {},
+  };
+  window.top = window;
+  const chrome = {
+    runtime: {
+      id: "kuali-test",
+      onMessage: {
+        addListener(listener) {
+          runtimeListener = listener;
+        },
+      },
+      getURL(path) {
+        return `chrome-extension://kuali-test/${path}`;
+      },
+      sendMessage() {
+        return Promise.resolve({ status: "idle" });
+      },
+    },
+  };
+  const source = readFileSync(new URL("../src/content.js", import.meta.url), "utf8");
+  vm.runInNewContext(source, {
+    chrome,
+    console,
+    document: { title: "Soporte Agama | Microsoft Teams" },
+    location: {
+      hostname: "teams.microsoft.com",
+      pathname: "/light-meetings/launch",
+      href: "https://teams.microsoft.com/light-meetings/launch?meetingId=test-meeting",
+    },
+    Promise,
+    Set,
+    URL,
+    window,
+  });
+
+  let response = null;
+  const keepOpen = runtimeListener(
+    { type: "capture-identify" },
+    {},
+    (value) => { response = value; },
+  );
+
+  assert.equal(keepOpen, false);
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(response)),
+    {
+      platform: "microsoft_teams",
+      meetingId: "test-meeting",
+      title: "Soporte Agama | Microsoft Teams",
+    },
+  );
+});

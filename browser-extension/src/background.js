@@ -206,6 +206,29 @@ function wireChannel(state, frameId, localChannel) {
   return mapFrameChannel(state.frames.get(frameId), localChannel);
 }
 
+async function recoverTabRegistration(tabId, state) {
+  if (state.info) return true;
+  try {
+    const info = await chrome.tabs.sendMessage(
+      tabId,
+      { type: "capture-identify" },
+      { frameId: 0 },
+    );
+    if (!info || !["google_meet", "microsoft_teams", "zoom"].includes(info.platform)) {
+      return false;
+    }
+    rememberFrame(state, 0);
+    state.info = {
+      platform: info.platform,
+      meetingId: info.meetingId,
+      title: info.title,
+    };
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
 function sendControl(tabId, state, command) {
   for (const frameId of state.frames.keys()) {
     chrome.tabs.sendMessage(
@@ -303,6 +326,7 @@ async function kualiAvailable() {
 
 async function start(tabId) {
   const state = stateFor(tabId);
+  await recoverTabRegistration(tabId, state);
   if (!state.info) {
     state.error = translated("unsupportedMeetingError", "This tab is not a supported meeting.");
     publish(tabId);
@@ -475,7 +499,7 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
       stop(tabId);
       break;
     case "capture-state":
-      connectionSettings().then(async ({ pairingToken }) => {
+      recoverTabRegistration(tabId, state).then(() => connectionSettings()).then(async ({ pairingToken }) => {
         const pairingConfigured = isValidPairingToken(pairingToken);
         const available = pairingConfigured ? await kualiAvailable() : false;
         reply({
