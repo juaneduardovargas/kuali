@@ -10,7 +10,7 @@ import {
   mapFrameChannel,
   SCREEN_RECORDING_WEBM,
 } from "./protocol.js";
-import { healthUrl, isKualiHealthMessage } from "./health.js";
+import { healthUrl, isKualiHealthMessage, isValidPairingToken } from "./health.js";
 import {
   fallbackFramesAfterSeparateAudio,
   meetingPresence,
@@ -255,6 +255,15 @@ async function connectionSettings() {
 
 async function kualiAvailable() {
   const { port: wsPort, pairingToken } = await connectionSettings();
+  if (!isValidPairingToken(pairingToken)) {
+    healthCache = {
+      key: `${wsPort}:missing-pairing-token`,
+      checkedAt: Date.now(),
+      available: false,
+      pending: null,
+    };
+    return false;
+  }
   const cacheKey = `${wsPort}:${pairingToken}`;
   const now = Date.now();
   if (healthCache.key === cacheKey && healthCache.pending) return healthCache.pending;
@@ -299,6 +308,15 @@ async function start(tabId) {
     publish(tabId);
     return;
   }
+  const { port: wsPort, pairingToken } = await connectionSettings();
+  if (!isValidPairingToken(pairingToken)) {
+    state.error = translated(
+      "missingPairingCodeError",
+      "Enter the 32-character pairing code from Kuali Settings before recording.",
+    );
+    publish(tabId);
+    return;
+  }
   await stop(tabId, false);
   state.hadSelf = false;
   state.selfPresent = false;
@@ -318,7 +336,6 @@ async function start(tabId) {
   state.status = "connecting";
   publish(tabId);
 
-  const { port: wsPort, pairingToken } = await connectionSettings();
   const query = new URLSearchParams({
     platform: state.info.platform,
     native_meeting_id: state.info.meetingId || state.info.title || translated("meetingFallbackName", "Meeting"),
@@ -458,19 +475,25 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
       stop(tabId);
       break;
     case "capture-state":
-      kualiAvailable().then((available) => reply({
+      connectionSettings().then(async ({ pairingToken }) => {
+        const pairingConfigured = isValidPairingToken(pairingToken);
+        const available = pairingConfigured ? await kualiAvailable() : false;
+        reply({
+          status: state.status,
+          error: state.error,
+          platform: state.info?.platform,
+          participantCount: state.participantCount,
+          connectedTracks: state.tracks.size,
+          separateChannels: [...state.channels.values()].filter((channel) => channel.audioKind !== "mixed").length,
+          mixedChannels: [...state.channels.values()].filter((channel) => channel.audioKind === "mixed").length,
+          pairingConfigured,
+          kualiAvailable: available,
+        });
+      }).catch(() => reply({
         status: state.status,
         error: state.error,
         platform: state.info?.platform,
-        participantCount: state.participantCount,
-        connectedTracks: state.tracks.size,
-        separateChannels: [...state.channels.values()].filter((channel) => channel.audioKind !== "mixed").length,
-        mixedChannels: [...state.channels.values()].filter((channel) => channel.audioKind === "mixed").length,
-        kualiAvailable: available,
-      })).catch(() => reply({
-        status: state.status,
-        error: state.error,
-        platform: state.info?.platform,
+        pairingConfigured: false,
         kualiAvailable: false,
       }));
       return true;

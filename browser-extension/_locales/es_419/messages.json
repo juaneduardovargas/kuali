@@ -12,6 +12,7 @@
   "waiting": { "message": "En espera" },
   "unsupportedTab": { "message": "Pestaña no compatible" },
   "kualiClosed": { "message": "Kuali está cerrado o el código no coincide" },
+  "pairingRequired": { "message": "Ingresa abajo el código de emparejamiento" },
   "connecting": { "message": "Conectando con Kuali…" },
   "preparing": { "message": "Preparando la captura…" },
   "capturing": { "message": "Capturando reunión" },
@@ -52,6 +53,7 @@
   "mixedCaptureDeniedError": { "message": "Chrome no permitió preparar la captura mezclada. Vuelve a intentarlo desde esta pestaña." },
   "screenChunkTooLargeError": { "message": "Un fragmento de la grabación de pantalla excedió el límite local de seguridad." },
   "captureRejectedError": { "message": "Kuali rechazó esta captura." },
+  "missingPairingCodeError": { "message": "Ingresa el código de emparejamiento de 32 caracteres de los Ajustes de Kuali antes de grabar." },
   "connectionError": { "message": "No pude conectar con Kuali en esta computadora. Abre la app e inténtalo de nuevo." },
   "meetingFallbackName": { "message": "Reunión" }
 }

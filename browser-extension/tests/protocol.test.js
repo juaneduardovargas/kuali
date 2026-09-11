@@ -8,7 +8,7 @@ import {
   mapFrameChannel,
   SCREEN_RECORDING_WEBM,
 } from "../src/protocol.js";
-import { healthUrl, isKualiHealthMessage } from "../src/health.js";
+import { healthUrl, isKualiHealthMessage, isValidPairingToken } from "../src/health.js";
 import {
   fallbackFramesAfterSeparateAudio,
   meetingPresence,
@@ -59,6 +59,9 @@ test("the health handshake only accepts Kuali on the configured loopback port", 
   })), true);
   assert.equal(isKualiHealthMessage('{"type":"ready"}'), false);
   assert.throws(() => healthUrl(0, "secret"), RangeError);
+  assert.equal(isValidPairingToken("0123456789abcdef0123456789ABCDEF"), true);
+  assert.equal(isValidPairingToken(""), false);
+  assert.equal(isValidPairingToken("secret"), false);
 });
 
 test("participant metadata stays on the same meeting-event contract", () => {

@@ -12,6 +12,7 @@
   "waiting": { "message": "Ready" },
   "unsupportedTab": { "message": "Unsupported tab" },
   "kualiClosed": { "message": "Kuali is closed or the pairing code does not match" },
+  "pairingRequired": { "message": "Enter the pairing code below" },
   "connecting": { "message": "Connecting to Kuali…" },
   "preparing": { "message": "Preparing capture…" },
   "capturing": { "message": "Capturing meeting" },
@@ -52,6 +53,7 @@
   "mixedCaptureDeniedError": { "message": "Chrome could not prepare mixed capture. Try again from this tab." },
   "screenChunkTooLargeError": { "message": "A screen recording chunk exceeded the local safety limit." },
   "captureRejectedError": { "message": "Kuali rejected this capture." },
+  "missingPairingCodeError": { "message": "Enter the 32-character pairing code from Kuali Settings before recording." },
   "connectionError": { "message": "Could not connect to Kuali on this computer. Open the app and try again." },
   "meetingFallbackName": { "message": "Meeting" }
 }

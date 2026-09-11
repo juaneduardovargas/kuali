@@ -20,8 +20,10 @@ const statusNames = {
 let tabId = null;
 let current = "idle";
 let kualiAvailable = null;
+let pairingConfigured = false;
 let lastState = null;
 const $ = (id) => document.getElementById(id);
+const validPairingToken = (value) => /^[0-9a-f]{32}$/i.test(String(value || "").trim());
 
 document.documentElement.lang = chrome.i18n?.getUILanguage?.() || "en";
 for (const element of document.querySelectorAll("[data-i18n]")) {
@@ -32,6 +34,7 @@ function render(state) {
   lastState = state;
   current = state?.status || "idle";
   if (typeof state?.kualiAvailable === "boolean") kualiAvailable = state.kualiAvailable;
+  if (typeof state?.pairingConfigured === "boolean") pairingConfigured = state.pairingConfigured;
   $("platform").textContent = state?.platform
     ? platformNames[state.platform] || state.platform
     : message("unsupportedTab", null, "Unsupported tab");
@@ -56,11 +59,13 @@ function render(state) {
       `${state.mixedChannels} mix${state.mixedChannels === 1 ? "" : "es"}`,
     ));
   }
-  $("status").textContent = current === "idle" && state?.platform && kualiAvailable === false
-    ? message("kualiClosed", null, "Kuali is not open")
-    : channels.length && current === "capturing"
-      ? `${statusNames[current]} · ${channels.join(" · ")}`
-      : statusNames[current] || current;
+  $("status").textContent = current === "idle" && state?.platform && !pairingConfigured
+    ? message("pairingRequired", null, "Enter the pairing code below")
+    : current === "idle" && state?.platform && kualiAvailable === false
+      ? message("kualiClosed", null, "Kuali is not open")
+      : channels.length && current === "capturing"
+        ? `${statusNames[current]} · ${channels.join(" · ")}`
+        : statusNames[current] || current;
   $("status").dataset.state = current;
   const idle = current === "idle";
   const awaitingConsent = idle && Boolean(state?.platform);
@@ -71,6 +76,7 @@ function render(state) {
   $("toggle").disabled = !state?.platform
     || current === "connecting"
     || current === "waiting"
+    || (idle && !pairingConfigured)
     || (idle && kualiAvailable === false)
     || (idle && !$("participant-consent").checked);
   $("error").hidden = !state?.error;
@@ -85,6 +91,7 @@ chrome.tabs.query({ active: true, currentWindow: true }).then(async ([tab]) => {
   });
   $("port").value = stored.kualiPort;
   $("pairing-token").value = stored.kualiPairingToken;
+  pairingConfigured = validPairingToken(stored.kualiPairingToken);
   if (tabId == null) return render(null);
   chrome.runtime.sendMessage({ type: "capture-state", tabId }, render);
 });
@@ -93,12 +100,24 @@ chrome.runtime.onMessage.addListener((message) => {
   if (message.type === "capture-status" && message.tabId === tabId) render(message);
 });
 
-$("toggle").addEventListener("click", () => {
+$("toggle").addEventListener("click", async () => {
   if (tabId == null) return;
   const starting = current === "idle";
+  const pairingToken = $("pairing-token").value.trim();
+  if (starting && !validPairingToken(pairingToken)) {
+    pairingConfigured = false;
+    $("pairing-token").focus();
+    render({ ...lastState, pairingConfigured: false });
+    return;
+  }
   if (starting && !$("participant-consent").checked) {
     $("participant-consent").focus();
     return;
+  }
+  if (starting) {
+    // Persist before asking the service worker to connect. This avoids a race
+    // when the user pastes the code and immediately presses Record.
+    await chrome.storage.local.set({ kualiPairingToken: pairingToken });
   }
   chrome.runtime.sendMessage({ type: starting ? "capture-start" : "capture-stop", tabId });
   if (starting) $("participant-consent").checked = false;
@@ -116,9 +135,15 @@ $("port").addEventListener("change", async () => {
 });
 
 $("pairing-token").addEventListener("change", async () => {
-  await chrome.storage.local.set({
-    kualiPairingToken: $("pairing-token").value.trim(),
-  });
+  const pairingToken = $("pairing-token").value.trim();
+  pairingConfigured = validPairingToken(pairingToken);
+  await chrome.storage.local.set({ kualiPairingToken: pairingToken });
   kualiAvailable = null;
   if (tabId != null) chrome.runtime.sendMessage({ type: "capture-state", tabId }, render);
+});
+
+$("pairing-token").addEventListener("input", () => {
+  pairingConfigured = validPairingToken($("pairing-token").value);
+  kualiAvailable = null;
+  render({ ...lastState, pairingConfigured });
 });

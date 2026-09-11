@@ -12,6 +12,10 @@ export function healthUrl(port, pairingToken) {
   return `ws://127.0.0.1:${value}/health?${query}`;
 }
 
+export function isValidPairingToken(pairingToken) {
+  return /^[0-9a-f]{32}$/i.test(String(pairingToken || "").trim());
+}
+
 export function isKualiHealthMessage(data) {
   try {
     const message = typeof data === "string" ? JSON.parse(data) : data;
