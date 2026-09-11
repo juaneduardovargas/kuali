@@ -996,7 +996,7 @@ mod tests {
             avatar_url: None,
             color: "#fff".into(),
             is_bot: false,
-            is_self: false,
+            is_self: true,
         });
         save_audio_manifest(&meeting).unwrap();
         let manifest: serde_json::Value = serde_json::from_slice(
@@ -1005,6 +1005,7 @@ mod tests {
         .unwrap();
         assert_eq!(manifest["tracks"][0]["displayName"], "Belén");
         assert_eq!(manifest["tracks"][0]["speakerId"], "42");
+        assert_eq!(manifest["tracks"][0]["isSelf"], true);
         delete(&id).unwrap();
     }
 

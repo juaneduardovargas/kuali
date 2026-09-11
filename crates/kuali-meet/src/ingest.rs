@@ -803,6 +803,12 @@ fn upsert_participant(
         .or_else(|| detail.get("is_bot"))
         .and_then(|value| value.as_bool())
         .unwrap_or(false);
+    speaker.is_self = index == MIC_CHANNEL
+        || detail
+            .get("isSelf")
+            .or_else(|| detail.get("is_self"))
+            .and_then(|value| value.as_bool())
+            .unwrap_or(false);
 
     if let Some(source_id) = speaker.source_id.clone() {
         speaker = session.remember_identity(&source_id, speaker);
@@ -946,6 +952,7 @@ impl Session {
             (true, Some(reserved)) => speaker.display_name = reserved.to_string(),
             (true, None) => {}
         }
+        speaker.is_self = channel == MIC_CHANNEL;
         speaker
     }
 
@@ -963,6 +970,10 @@ impl Session {
                 speaker.avatar_url.clone_from(&previous.avatar_url);
             }
             speaker.is_bot |= previous.is_bot;
+            // Self identity is stable for a platform participant. Partial DOM
+            // updates must not erase it after the microphone or roster proved
+            // that this source belongs to the person running Kuali.
+            speaker.is_self |= previous.is_self;
         }
         self.identities
             .insert(source_id.to_string(), speaker.clone());
@@ -1259,7 +1270,10 @@ mod tests {
         let mut session = test_session();
         name_speaker(MIC_CHANNEL, "", &mut session, &tx);
         match rx.try_recv() {
-            Ok(VoiceEvent::ParticipantPresent(speaker)) => assert_eq!(speaker.display_name, "Tú"),
+            Ok(VoiceEvent::ParticipantPresent(speaker)) => {
+                assert_eq!(speaker.display_name, "Tú");
+                assert!(speaker.is_self);
+            }
             other => panic!("expected the local microphone, got {other:?}"),
         }
         // An unnamed participant channel remains pending identity resolution.
@@ -1719,6 +1733,36 @@ mod tests {
             Some("https://example.test/ana.jpg")
         );
         assert_eq!(session.speaker_id(3), speaker.user_id);
+    }
+
+    #[test]
+    fn local_microphone_metadata_stays_self_across_partial_updates() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut session = test_session();
+        on_text(
+            r#"{"kind":"participant-upsert","ts":1,"speaker":"Tú","detail":{"channel":1000,"participantId":"microsoft_teams:self","displayName":"Tú","isSelf":true,"audioKind":"separate"}}"#,
+            &mut session,
+            &tx,
+        );
+        let initial = match rx.try_recv() {
+            Ok(VoiceEvent::ParticipantPresent(speaker)) => speaker,
+            other => panic!("expected local participant metadata, got {other:?}"),
+        };
+        assert!(initial.is_self);
+
+        on_text(
+            r#"{"kind":"participant-upsert","ts":2,"speaker":"Tú","detail":{"channel":1000,"participantId":"microsoft_teams:self","displayName":"Tú","audioKind":"separate"}}"#,
+            &mut session,
+            &tx,
+        );
+        assert!(session.channels.get(&MIC_CHANNEL).unwrap().speaker.is_self);
+        assert!(
+            session
+                .identities
+                .get("microsoft_teams:self")
+                .unwrap()
+                .is_self
+        );
     }
 
     #[test]
