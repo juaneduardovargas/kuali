@@ -107,6 +107,10 @@ Run `npm run package:store` to create the minimal upload ZIP and SHA-256 under
 graphics, and dashboard checklist live in [`store`](store/README.md). Manual
 unpacked installation remains supported for development and as a fallback.
 
+The start dialog offers visible-tab video as a per-meeting option. Its value is
+remembered in Chrome; before the first choice, the desktop setting supplies the
+default. Participant-notice consent is still confirmed for every meeting.
+
 ## Privacy
 
 Capture requires an affirmative participant-notice confirmation and remains

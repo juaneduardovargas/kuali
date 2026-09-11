@@ -39,8 +39,9 @@ atribuir hablantes, anunciar la grabación y entregar resultados.
 Kuali también guarda los ajustes que introduces. Estos pueden incluir el token
 del bot de Discord, usuario o ID de Discord, ubicación de modelos, vocabulario
 especial, proveedor de resumen y sus claves de API, y URLs y secretos de firma
-de webhooks. La extensión sólo guarda el puerto local y el código de
-emparejamiento usados para encontrar y autenticar la aplicación de escritorio.
+de webhooks. La extensión sólo guarda el puerto local, el código de
+emparejamiento y la preferencia recordada de video usada para configurar cada
+captura.
 
 ## Para qué se usa
 
@@ -91,9 +92,10 @@ equipo, y al eliminar una reunión también desaparece del índice.
 
 Las reuniones permanecen hasta que las elimines desde Kuali o borres sus
 archivos. Los pesos permanecen hasta que los elimines desde Kuali. Al quitar la
-extensión, el navegador elimina su preferencia de puerto conforme a su manejo
-normal de datos de extensiones. Los datos ya entregados a Discord, un proveedor
-o un webhook quedan bajo el control de ese servicio y deben borrarse allí.
+extensión, el navegador elimina el puerto, el código de emparejamiento y la
+preferencia de video conforme a su manejo normal de datos de extensiones. Los
+datos ya entregados a Discord, un proveedor o un webhook quedan bajo el control
+de ese servicio y deben borrarse allí.
 
 De forma predeterminada, el audio PCM se procesa en memoria y desaparece al
 terminar el procesamiento o cerrar la aplicación. Si habilitas la conservación

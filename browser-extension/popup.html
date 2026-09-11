@@ -20,6 +20,13 @@
         <h3 id="consent-title" data-i18n="beforeRecording">Before recording</h3>
         <p data-i18n="captureDisclosure">Kuali will send participant audio and identity to the local desktop app to transcribe this meeting.</p>
         <p class="data-note" data-i18n="destinationDisclosure">Depending on your settings, the app may also save local audio tracks, the visible tab, and technical diagnostics. None of those files are sent to an AI provider or webhook.</p>
+        <label class="capture-option">
+          <input id="record-video" name="record-video" type="checkbox" />
+          <span>
+            <strong data-i18n="recordVideoOption">Record meeting-tab video</strong>
+            <small data-i18n="recordVideoDescription">Saves the visible tab and everyone's mixed audio locally. This preference is remembered; consent is confirmed for every meeting.</small>
+          </span>
+        </label>
         <label class="consent-check">
           <input id="participant-consent" name="participant-consent" type="checkbox" />
           <span data-i18n="consentConfirmation">I confirm that I informed the participants and have permission to record and transcribe.</span>

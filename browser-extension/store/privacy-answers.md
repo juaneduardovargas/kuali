@@ -1,6 +1,6 @@
 # Chrome Web Store privacy answers
 
-These answers describe version `0.1.7`.
+These answers describe version `0.1.15`.
 
 ## Single purpose
 
@@ -13,16 +13,16 @@ These answers describe version `0.1.7`.
 
 ### `storage`
 
-> Stores only the user-selected loopback port and pairing code used to connect
-> to the local Kuali desktop application. No meeting audio, video, diagnostic,
-> or transcript is stored in extension storage.
+> Stores only the user-selected loopback port, pairing code, and remembered
+> meeting-video preference used to configure each capture. No meeting audio,
+> video, diagnostic, or transcript is stored in extension storage.
 
 ### `tabCapture`
 
 > Captures the current meeting tab's mixed audio as a resilient fallback on all
-> supported platforms and, only when enabled in the desktop settings, captures
-> the visible tab as local WebM video. It is started by an explicit user action
-> and stopped when capture or the meeting ends.
+> supported platforms and, only when enabled in the explicit start dialog or
+> desktop default, captures the visible tab as local WebM video. It is started
+> by an explicit user action and stopped when capture or the meeting ends.
 
 ### `offscreen`
 

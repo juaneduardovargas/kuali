@@ -87,6 +87,13 @@ pub enum VoiceEvent {
     /// Preserved for legacy integrations. Bundled connectors use
     /// `ConnectionRequested`, which can report rejection to the client.
     Connected(CallInfo),
+    /// A paired browser extension started a meeting with its per-capture local
+    /// video-retention choice. This keeps the desktop default as a fallback
+    /// while allowing the explicit start dialog to override it safely.
+    BrowserConnected {
+        info: CallInfo,
+        save_screen_recording: bool,
+    },
     /// Kuali left because the followed user left or the channel became empty.
     Disconnected,
     /// A resolved participant is present in the channel.

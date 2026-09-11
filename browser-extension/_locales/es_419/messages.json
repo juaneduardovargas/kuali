@@ -25,6 +25,8 @@
   "beforeRecording": { "message": "Antes de grabar" },
   "captureDisclosure": { "message": "Kuali enviará a la aplicación local el audio y la identidad de los participantes para transcribir esta reunión." },
   "destinationDisclosure": { "message": "Según tus ajustes, la app también puede guardar localmente las pistas de audio, la pestaña visible y datos técnicos de diagnóstico. Nada de eso se envía a un proveedor de IA o webhook." },
+  "recordVideoOption": { "message": "Grabar video de la pestaña de la reunión" },
+  "recordVideoDescription": { "message": "Guarda localmente la pestaña visible y el audio mezclado de todos. Esta preferencia se recuerda; el consentimiento se confirma en cada reunión." },
   "consentConfirmation": { "message": "Confirmo que informé a los participantes y tengo permiso para grabar y transcribir." },
   "privacyPolicy": { "message": "Leer la política de privacidad" },
   "recordAndTranscribe": { "message": "Grabar y transcribir" },

@@ -18,6 +18,7 @@ test("the store manifest has narrow, documented access", () => {
 
 test("capture requires disclosure and affirmative confirmation", () => {
   const popup = read("popup.html");
+  const popupScript = read("popup.js");
   const content = read("src/content.js");
   assert.match(popup, /participant-consent/);
   assert.match(popup, /captureDisclosure/);
@@ -26,6 +27,11 @@ test("capture requires disclosure and affirmative confirmation", () => {
   assert.match(content, /consentCheck\.checked/);
   assert.match(content, /recordingIndicator/);
   assert.match(content, /capture-stop/);
+  assert.match(popup, /id="record-video"/);
+  assert.match(popupScript, /kualiCaptureScreen/);
+  assert.match(popupScript, /options: \{ screen: \$\("record-video"\)\.checked \}/);
+  assert.match(content, /options: \{ screen: recordVideoCheck\.checked \}/);
+  assert.match(content, /saveCaptureScreenPreference/);
 });
 
 test("the recording indicator stays compact, movable, and out of Meet controls", () => {

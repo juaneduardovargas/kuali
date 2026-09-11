@@ -2241,7 +2241,17 @@ async fn handle_session_event(inner: &Arc<Inner>, session: VoiceSessionKey, even
             }
         }
         VoiceEvent::Connected(info) => {
-            if let Err(message) = start_meeting(inner, session, info).await {
+            if let Err(message) = start_meeting(inner, session, info, None).await {
+                inner.emit(KualiEvent::error("capture", message));
+            }
+        }
+        VoiceEvent::BrowserConnected {
+            info,
+            save_screen_recording,
+        } => {
+            if let Err(message) =
+                start_meeting(inner, session, info, Some(save_screen_recording)).await
+            {
                 inner.emit(KualiEvent::error("capture", message));
             }
         }
@@ -2894,10 +2904,19 @@ fn latest_meeting_for_discord(
     Ok(Some(newest))
 }
 
+fn screen_recording_enabled(
+    source: VoiceSource,
+    desktop_default: bool,
+    capture_choice: Option<bool>,
+) -> bool {
+    source == VoiceSource::Web && capture_choice.unwrap_or(desktop_default)
+}
+
 async fn start_meeting(
     inner: &Arc<Inner>,
     session: VoiceSessionKey,
     info: CallInfo,
+    save_screen_recording: Option<bool>,
 ) -> Result<(), String> {
     if inner.active.lock().contains_key(&session) {
         return Ok(());
@@ -2974,8 +2993,11 @@ async fn start_meeting(
                 segmenter: Segmenter::new(config.recording),
                 audio_archive,
                 screen_recording: None,
-                screen_recording_enabled: session.source == VoiceSource::Web
-                    && config.meet.save_screen_recording,
+                screen_recording_enabled: screen_recording_enabled(
+                    session.source,
+                    config.meet.save_screen_recording,
+                    save_screen_recording,
+                ),
                 ticks: 0,
                 text_channel_id: info.text_channel_id,
                 ending: false,
@@ -4540,6 +4562,22 @@ mod tests {
 
     fn session(source: VoiceSource, id: u64) -> VoiceSessionKey {
         VoiceSessionKey { source, id }
+    }
+
+    #[test]
+    fn a_browser_capture_choice_overrides_the_desktop_video_default() {
+        assert!(screen_recording_enabled(VoiceSource::Web, false, Some(true)));
+        assert!(!screen_recording_enabled(
+            VoiceSource::Web,
+            true,
+            Some(false)
+        ));
+        assert!(screen_recording_enabled(VoiceSource::Web, true, None));
+        assert!(!screen_recording_enabled(
+            VoiceSource::Discord,
+            true,
+            Some(true)
+        ));
     }
 
     fn active_meeting(id: &str, ticks: u64) -> ActiveMeeting {

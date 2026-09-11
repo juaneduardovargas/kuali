@@ -86,14 +86,18 @@ SHA-256. Los textos, declaraciones de privacidad, instrucciones para revisión,
 gráficos y checklist del panel están en [`store`](store/README.es.md). La
 instalación manual seguirá disponible para desarrollo y como alternativa.
 
+El diálogo de inicio ofrece el video de la pestaña como opción por reunión. La
+elección queda guardada en Chrome; antes de elegirla por primera vez se usa el
+ajuste de escritorio. El consentimiento se sigue confirmando en cada reunión.
+
 ## Privacidad
 
 La captura exige confirmar que informaste a los participantes. Mientras está
 activa se muestran un indicador en la página y la insignia `REC`. Los datos sólo
 van a la app Kuali en `127.0.0.1`. Ajustes opcionales permiten guardar pistas
 WAV, un WebM de la pestaña visible con el audio de la pestaña y del micrófono
-local, y diagnósticos saneados en la carpeta local
-de la reunión. Consulta la [política completa](../PRIVACY.es.md).
+local, y diagnósticos saneados en la carpeta local de la reunión. Consulta la
+[política completa](../PRIVACY.es.md).
 
 ## Licencia
 

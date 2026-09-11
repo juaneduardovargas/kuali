@@ -10,7 +10,12 @@ import {
   mapFrameChannel,
   SCREEN_RECORDING_WEBM,
 } from "./protocol.js";
-import { healthUrl, isKualiHealthMessage, isValidPairingToken } from "./health.js";
+import {
+  captureDefaultsFromHealthMessage,
+  healthUrl,
+  isKualiHealthMessage,
+  isValidPairingToken,
+} from "./health.js";
 import {
   fallbackFramesAfterSeparateAudio,
   meetingPresence,
@@ -26,7 +31,13 @@ const HEALTH_TIMEOUT_MS = 900;
 const HEALTH_CACHE_MS = 3_000;
 const MEETING_END_GRACE_MS = 3_500;
 const sessions = new Map();
-let healthCache = { key: null, checkedAt: 0, available: false, pending: null };
+let healthCache = {
+  key: null,
+  checkedAt: 0,
+  available: false,
+  capture: null,
+  pending: null,
+};
 const translated = (key, fallback, substitutions) => (
   chrome.i18n?.getMessage(key, substitutions) || fallback
 );
@@ -292,6 +303,7 @@ async function kualiAvailable() {
       key: `${wsPort}:missing-pairing-token`,
       checkedAt: Date.now(),
       available: false,
+      capture: null,
       pending: null,
     };
     return false;
@@ -306,7 +318,7 @@ async function kualiAvailable() {
   const pending = new Promise((resolve) => {
     let settled = false;
     let socket = null;
-    const finish = (available) => {
+    const finish = (available, capture = null) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
@@ -314,6 +326,7 @@ async function kualiAvailable() {
         key: cacheKey,
         checkedAt: Date.now(),
         available,
+        capture,
         pending: null,
       };
       try { socket?.close(1000, "health checked"); } catch (_) {}
@@ -322,18 +335,28 @@ async function kualiAvailable() {
     const timer = setTimeout(() => finish(false), HEALTH_TIMEOUT_MS);
     try {
       socket = new WebSocket(healthUrl(wsPort, pairingToken));
-      socket.onmessage = (event) => finish(isKualiHealthMessage(event.data));
+      socket.onmessage = (event) => {
+        const available = isKualiHealthMessage(event.data);
+        const capture = available ? captureDefaultsFromHealthMessage(event.data) : null;
+        finish(available, capture);
+      };
       socket.onerror = () => finish(false);
       socket.onclose = () => finish(false);
     } catch (_) {
       finish(false);
     }
   });
-  healthCache = { key: cacheKey, checkedAt: 0, available: false, pending };
+  healthCache = {
+    key: cacheKey,
+    checkedAt: 0,
+    available: false,
+    capture: null,
+    pending,
+  };
   return pending;
 }
 
-async function start(tabId) {
+async function start(tabId, options = {}) {
   const state = stateFor(tabId);
   await recoverTabRegistration(tabId, state);
   if (!state.info) {
@@ -376,6 +399,9 @@ async function start(tabId) {
     protocol: "capture.v1+participants",
     pairing_token: pairingToken,
   });
+  if (typeof options?.screen === "boolean") {
+    query.set("capture_screen", options.screen ? "1" : "0");
+  }
   const socket = new WebSocket(`ws://127.0.0.1:${wsPort}/ingest?${query}`);
   state.socket = socket;
 
@@ -506,7 +532,7 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
       }
       break;
     case "capture-start":
-      start(tabId);
+      start(tabId, message.options);
       break;
     case "capture-stop":
       stop(tabId);
@@ -525,6 +551,7 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
           mixedChannels: [...state.channels.values()].filter((channel) => channel.audioKind === "mixed").length,
           pairingConfigured,
           kualiAvailable: available,
+          captureDefaults: healthCache.capture,
         });
       }).catch(() => reply({
         status: state.status,

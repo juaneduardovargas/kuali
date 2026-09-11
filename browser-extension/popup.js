@@ -22,6 +22,7 @@ let current = "idle";
 let kualiAvailable = null;
 let pairingConfigured = false;
 let lastState = null;
+let captureScreenPreference = null;
 const $ = (id) => document.getElementById(id);
 const validPairingToken = (value) => /^[0-9a-f]{32}$/i.test(String(value || "").trim());
 
@@ -35,6 +36,9 @@ function render(state) {
   current = state?.status || "idle";
   if (typeof state?.kualiAvailable === "boolean") kualiAvailable = state.kualiAvailable;
   if (typeof state?.pairingConfigured === "boolean") pairingConfigured = state.pairingConfigured;
+  if (captureScreenPreference == null && typeof state?.captureDefaults?.screen === "boolean") {
+    $("record-video").checked = state.captureDefaults.screen;
+  }
   $("platform").textContent = state?.platform
     ? platformNames[state.platform] || state.platform
     : message("unsupportedTab", null, "Unsupported tab");
@@ -88,10 +92,17 @@ chrome.tabs.query({ active: true, currentWindow: true }).then(async ([tab]) => {
   const stored = await chrome.storage.local.get({
     kualiPort: 9099,
     kualiPairingToken: "",
+    kualiCaptureScreen: null,
   });
   $("port").value = stored.kualiPort;
   $("pairing-token").value = stored.kualiPairingToken;
   pairingConfigured = validPairingToken(stored.kualiPairingToken);
+  captureScreenPreference = typeof stored.kualiCaptureScreen === "boolean"
+    ? stored.kualiCaptureScreen
+    : null;
+  if (captureScreenPreference != null) {
+    $("record-video").checked = captureScreenPreference;
+  }
   if (tabId == null) return render(null);
   chrome.runtime.sendMessage({ type: "capture-state", tabId }, render);
 });
@@ -117,13 +128,26 @@ $("toggle").addEventListener("click", async () => {
   if (starting) {
     // Persist before asking the service worker to connect. This avoids a race
     // when the user pastes the code and immediately presses Record.
-    await chrome.storage.local.set({ kualiPairingToken: pairingToken });
+    captureScreenPreference = $("record-video").checked;
+    await chrome.storage.local.set({
+      kualiPairingToken: pairingToken,
+      kualiCaptureScreen: captureScreenPreference,
+    });
   }
-  chrome.runtime.sendMessage({ type: starting ? "capture-start" : "capture-stop", tabId });
+  chrome.runtime.sendMessage({
+    type: starting ? "capture-start" : "capture-stop",
+    tabId,
+    ...(starting ? { options: { screen: $("record-video").checked } } : {}),
+  });
   if (starting) $("participant-consent").checked = false;
 });
 
 $("participant-consent").addEventListener("change", () => render(lastState));
+
+$("record-video").addEventListener("change", async () => {
+  captureScreenPreference = $("record-video").checked;
+  await chrome.storage.local.set({ kualiCaptureScreen: captureScreenPreference });
+});
 
 $("port").addEventListener("change", async () => {
   const value = Number($("port").value);

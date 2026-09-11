@@ -32,6 +32,8 @@ const ui = {
   consentDetailed: translated("consentDetailed", "Kuali will capture participant audio and identity —name, photo, and platform ID— and send them to the Kuali app on this computer to transcribe the meeting."),
   destinationDetailed: translated("destinationDetailed", "Depending on your settings, the app may also save local audio tracks, the visible tab, and technical diagnostics. Only the transcript and its results may go to the AI provider or webhook you configured."),
   consentConfirmation: translated("consentDetailedConfirmation", "I confirm that I informed the participants and have permission to record and transcribe this meeting."),
+  recordVideoOption: translated("recordVideoOption", "Record meeting-tab video"),
+  recordVideoDescription: translated("recordVideoDescription", "Saves the visible tab and everyone's mixed audio locally. This preference is remembered; consent is confirmed for every meeting."),
   privacyPolicy: translated("privacyPolicy", "Read the privacy policy"),
   cancel: translated("cancel", "Cancel"),
   recordAndTranscribe: translated("recordAndTranscribe", "Record and transcribe"),
@@ -43,6 +45,28 @@ let suggestionRetry = null;
 let recordingHost = null;
 let runtimeAvailable = true;
 const suggestedMeetings = new Set();
+let captureScreenDefault = false;
+
+async function readCaptureScreenPreference() {
+  try {
+    const stored = await chrome.storage?.local?.get(["kualiCaptureScreen"]);
+    return typeof stored?.kualiCaptureScreen === "boolean"
+      ? stored.kualiCaptureScreen
+      : captureScreenDefault;
+  } catch (_) {
+    return captureScreenDefault;
+  }
+}
+
+function saveCaptureScreenPreference(value) {
+  try {
+    return Promise.resolve(chrome.storage?.local?.set({
+      kualiCaptureScreen: value === true,
+    })).catch(() => {});
+  } catch (_) {
+    return Promise.resolve();
+  }
+}
 
 /**
  * Reloading an extension does not remove content scripts already present in a
@@ -132,6 +156,9 @@ async function maybeSuggestRecording(event) {
 
   const state = await sendRuntimeMessage({ type: "capture-state" });
   if (!state || state.status !== "idle") return;
+  if (typeof state.captureDefaults?.screen === "boolean") {
+    captureScreenDefault = state.captureDefaults.screen;
+  }
   if (!state.kualiAvailable) {
     clearTimeout(suggestionRetry);
     suggestionRetry = setTimeout(() => {
@@ -403,7 +430,7 @@ function showRecordingSuggestion() {
       }
       .record:hover { background: var(--k-accent-strong); transform: translateY(-1px); }
       .record:active { transform: translateY(0); }
-      .record:focus-visible, .close:focus-visible, .cancel:focus-visible, .privacy:focus-visible, .consent-check input:focus-visible {
+      .record:focus-visible, .close:focus-visible, .cancel:focus-visible, .privacy:focus-visible, .consent-check input:focus-visible, .capture-option input:focus-visible {
         outline: 2px solid var(--k-accent);
         outline-offset: 3px;
       }
@@ -477,6 +504,23 @@ function showRecordingSuggestion() {
         cursor: pointer;
       }
       .consent-check input { width: 16px; height: 16px; margin: 1px 0 0; accent-color: var(--k-accent); }
+      .capture-option {
+        display: grid;
+        grid-template-columns: 18px minmax(0, 1fr);
+        gap: 10px;
+        align-items: start;
+        margin: 14px 0;
+        padding: 12px;
+        border: 1px solid color-mix(in srgb, var(--k-accent) 36%, var(--k-line));
+        border-radius: 12px;
+        background: var(--k-accent-soft);
+        color: var(--k-text);
+        cursor: pointer;
+      }
+      .capture-option input { width: 16px; height: 16px; margin: 1px 0 0; accent-color: var(--k-accent); }
+      .capture-option strong, .capture-option small { display: block; }
+      .capture-option strong { font-size: 12px; line-height: 1.35; }
+      .capture-option small { margin-top: 3px; color: var(--k-muted); font-size: 11px; line-height: 1.4; }
       .privacy { color: var(--k-accent); font-size: 12px; text-underline-offset: 3px; }
       .privacy:hover { color: var(--k-accent-strong); }
       .consent-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 16px; }
@@ -539,6 +583,10 @@ function showRecordingSuggestion() {
       </div>
       <p>${ui.consentDetailed}</p>
       <p>${ui.destinationDetailed}</p>
+      <label class="capture-option">
+        <input type="checkbox" name="record-video" />
+        <span><strong>${ui.recordVideoOption}</strong><small>${ui.recordVideoDescription}</small></span>
+      </label>
       <label class="consent-check">
         <input type="checkbox" name="participant-consent" />
         <span>${ui.consentConfirmation}</span>
@@ -556,7 +604,12 @@ function showRecordingSuggestion() {
   const toast = shadow.querySelector(".toast");
   const consent = shadow.querySelector(".consent");
   const consentCheck = shadow.querySelector(".consent-check input");
+  const recordVideoCheck = shadow.querySelector(".capture-option input");
   const confirm = shadow.querySelector(".confirm");
+  let recordVideoTouched = false;
+  readCaptureScreenPreference().then((value) => {
+    if (suggestionHost === host && !recordVideoTouched) recordVideoCheck.checked = value;
+  });
   shadow.querySelector(".record").addEventListener("click", () => {
     cancelAnimationFrame(suggestionFrame);
     suggestionFrame = null;
@@ -572,12 +625,20 @@ function showRecordingSuggestion() {
   consentCheck.addEventListener("change", () => {
     confirm.disabled = !consentCheck.checked;
   });
+  recordVideoCheck.addEventListener("change", () => {
+    recordVideoTouched = true;
+    saveCaptureScreenPreference(recordVideoCheck.checked);
+  });
   confirm.addEventListener("click", () => {
     if (!consentCheck.checked) {
       consentCheck.focus();
       return;
     }
-    sendRuntimeMessage({ type: "capture-start" });
+    saveCaptureScreenPreference(recordVideoCheck.checked);
+    sendRuntimeMessage({
+      type: "capture-start",
+      options: { screen: recordVideoCheck.checked },
+    });
     dismissSuggestion();
   });
 

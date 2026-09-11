@@ -25,6 +25,8 @@
   "beforeRecording": { "message": "Before recording" },
   "captureDisclosure": { "message": "Kuali will send participant audio and identity to the local desktop app to transcribe this meeting." },
   "destinationDisclosure": { "message": "Depending on your settings, the app may also save local audio tracks, the visible tab, and technical diagnostics. None of those files are sent to an AI provider or webhook." },
+  "recordVideoOption": { "message": "Record meeting-tab video" },
+  "recordVideoDescription": { "message": "Saves the visible tab and everyone's mixed audio locally. This preference is remembered; consent is confirmed for every meeting." },
   "consentConfirmation": { "message": "I confirm that I informed the participants and have permission to record and transcribe." },
   "privacyPolicy": { "message": "Read the privacy policy" },
   "recordAndTranscribe": { "message": "Record and transcribe" },

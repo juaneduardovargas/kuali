@@ -183,6 +183,7 @@ async fn handle_connection(
     })??;
 
     let meeting = MeetingParams::from_uri(&request_path);
+    let preferences = meeting.capture_preferences(preferences);
     let (mut sink, mut source) = ws.split();
 
     // The extension probes this endpoint before suggesting capture. It creates
@@ -194,6 +195,11 @@ async fn handle_connection(
             "service": "kuali",
             "status": "ready",
             "protocol": "capture.v1",
+            "capture": {
+                "audio": preferences.save_audio,
+                "screen": preferences.save_screen_recording,
+                "diagnostics": preferences.save_diagnostics,
+            },
         });
         sink.send(Message::Text(health.to_string().into())).await?;
         sink.send(Message::Close(None)).await?;
@@ -243,7 +249,10 @@ async fn handle_connection(
         }
         Err(_) => return Ok(()),
     }
-    let _ = events.send(VoiceEvent::Connected(meeting.call_info()));
+    let _ = events.send(VoiceEvent::BrowserConnected {
+        info: meeting.call_info(),
+        save_screen_recording: preferences.save_screen_recording,
+    });
 
     // The extension waits for a server `ready` confirmation before triggering
     // `BEGIN_CAPTURE` in the tab. Without it the popup remains connecting and no
@@ -1024,6 +1033,7 @@ fn to_i16(samples: &[f32]) -> Vec<i16> {
 struct MeetingParams {
     platform: String,
     native_meeting_id: String,
+    capture_screen: Option<bool>,
 }
 
 impl MeetingParams {
@@ -1039,6 +1049,22 @@ impl MeetingParams {
                 .remove("platform")
                 .unwrap_or_else(|| "google_meet".to_string()),
             native_meeting_id: params.remove("native_meeting_id").unwrap_or_default(),
+            capture_screen: params.remove("capture_screen").and_then(|value| {
+                match value.as_str() {
+                    "1" | "true" => Some(true),
+                    "0" | "false" => Some(false),
+                    _ => None,
+                }
+            }),
+        }
+    }
+
+    fn capture_preferences(&self, defaults: CapturePreferences) -> CapturePreferences {
+        CapturePreferences {
+            save_screen_recording: self
+                .capture_screen
+                .unwrap_or(defaults.save_screen_recording),
+            ..defaults
         }
     }
 
@@ -1115,6 +1141,7 @@ mod tests {
             MeetingParams {
                 platform: "google_meet".into(),
                 native_meeting_id: "abc-defg-hij".into(),
+                capture_screen: None,
             },
             CapturePreferences::default(),
         )
@@ -1173,6 +1200,24 @@ mod tests {
     fn encoded_characters_in_the_query_are_decoded() {
         let params = MeetingParams::from_uri("/ingest?native_meeting_id=sala%20uno+dos");
         assert_eq!(params.native_meeting_id, "sala uno dos");
+    }
+
+    #[test]
+    fn an_explicit_screen_choice_overrides_only_the_desktop_default() {
+        let defaults = CapturePreferences {
+            save_audio: true,
+            save_screen_recording: true,
+            save_diagnostics: true,
+        };
+        let disabled =
+            MeetingParams::from_uri("/ingest?capture_screen=0").capture_preferences(defaults);
+        assert!(disabled.save_audio);
+        assert!(!disabled.save_screen_recording);
+        assert!(disabled.save_diagnostics);
+
+        let enabled = MeetingParams::from_uri("/ingest?capture_screen=true")
+            .capture_preferences(CapturePreferences::default());
+        assert!(enabled.save_screen_recording);
     }
 
     #[test]
@@ -1305,6 +1350,7 @@ mod tests {
             MeetingParams {
                 platform: "google_meet".into(),
                 native_meeting_id: "abc-defg-hij".into(),
+                capture_screen: None,
             },
             CapturePreferences {
                 save_screen_recording: true,
@@ -1340,6 +1386,7 @@ mod tests {
             MeetingParams {
                 platform: "google_meet".into(),
                 native_meeting_id: "abc-defg-hij".into(),
+                capture_screen: None,
             },
             CapturePreferences {
                 save_diagnostics: true,
@@ -1368,6 +1415,7 @@ mod tests {
             MeetingParams {
                 platform: "microsoft_teams".into(),
                 native_meeting_id: "teams-test".into(),
+                capture_screen: None,
             },
             CapturePreferences {
                 save_diagnostics: true,
@@ -1419,7 +1467,7 @@ mod tests {
         ));
 
         let url = format!(
-            "ws://127.0.0.1:{port}/ingest?platform=google_meet&native_meeting_id=abc-defg-hij&api_key=x&language=es&pairing_token={TEST_PAIRING_TOKEN}"
+            "ws://127.0.0.1:{port}/ingest?platform=google_meet&native_meeting_id=abc-defg-hij&api_key=x&language=es&capture_screen=0&pairing_token={TEST_PAIRING_TOKEN}"
         );
         let stream = TcpStream::connect(("127.0.0.1", port)).await.unwrap();
         let (mut ws, _) = tokio_tungstenite::client_async(&url, stream).await.unwrap();
@@ -1436,11 +1484,15 @@ mod tests {
         let (connected_session, event) = recv_scoped(&mut rx).await;
         assert_eq!(connected_session, session_id);
         match event {
-            VoiceEvent::Connected(info) => {
+            VoiceEvent::BrowserConnected {
+                info,
+                save_screen_recording,
+            } => {
                 assert_eq!(info.guild_name, "Google Meet");
                 assert_eq!(info.channel_name, "abc-defg-hij");
+                assert!(!save_screen_recording);
             }
-            other => panic!("expected Connected, got {other:?}"),
+            other => panic!("expected BrowserConnected, got {other:?}"),
         }
 
         // Without `ready`, the extension never begins capture and remains in the
@@ -1456,7 +1508,7 @@ mod tests {
                 assert_eq!(ready["type"], "ready");
                 assert_eq!(ready["meeting_id"], "abc-defg-hij");
                 assert_eq!(ready["capture"]["audio"], true);
-                assert_eq!(ready["capture"]["screen"], true);
+                assert_eq!(ready["capture"]["screen"], false);
                 assert_eq!(ready["capture"]["diagnostics"], true);
             }
             other => panic!("expected the `ready` greeting, got {other:?}"),
@@ -1530,6 +1582,7 @@ mod tests {
         assert_eq!(health["type"], "health");
         assert_eq!(health["service"], "kuali");
         assert_eq!(health["status"], "ready");
+        assert_eq!(health["capture"]["screen"], false);
 
         assert!(
             tokio::time::timeout(Duration::from_millis(50), rx.recv())
@@ -1581,9 +1634,10 @@ mod tests {
             }
             other => panic!("expected the first admission, got {other:?}"),
         }
-        assert!(
-            matches!(recv_scoped(&mut rx).await, (id, VoiceEvent::Connected(_)) if id == first_session)
-        );
+        assert!(matches!(
+            recv_scoped(&mut rx).await,
+            (id, VoiceEvent::BrowserConnected { .. }) if id == first_session
+        ));
         assert!(matches!(
             first.next().await.unwrap().unwrap(),
             Message::Text(_)
@@ -1614,7 +1668,7 @@ mod tests {
 
         loop {
             let (id, event) = recv_scoped(&mut rx).await;
-            if id == second_session && matches!(event, VoiceEvent::Connected(_)) {
+            if id == second_session && matches!(event, VoiceEvent::BrowserConnected { .. }) {
                 break;
             }
         }

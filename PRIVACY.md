@@ -40,8 +40,8 @@ the call, attribute speakers, announce recording, and deliver results.
 Kuali also stores settings you enter, which may include a Discord bot token,
 Discord username or user ID, model location, special vocabulary, summary
 provider settings and API keys, and webhook URLs and signing secrets. The
-browser extension itself stores only the local port and pairing code used to
-find and authenticate the desktop application.
+browser extension itself stores only the local port, pairing code, and the
+remembered meeting-video preference used to configure each capture.
 
 ## How information is used
 
@@ -94,9 +94,10 @@ your computer, and deleting a meeting removes it from the index as well.
 
 Meeting records remain until you delete them in Kuali or remove their files.
 Model weights remain until you delete them in Kuali. Removing the extension
-deletes its browser-managed local-port preference according to the browser's
-normal extension-data behavior. Data already delivered to Discord, a summary
-provider, or a webhook is controlled by that service and must be deleted there.
+deletes its browser-managed local port, pairing code, and meeting-video
+preference according to the browser's normal extension-data behavior. Data
+already delivered to Discord, a summary provider, or a webhook is controlled
+by that service and must be deleted there.
 
 By default, captured PCM audio is processed in memory and disappears when
 processing ends or the application closes. If you enable local media retention,

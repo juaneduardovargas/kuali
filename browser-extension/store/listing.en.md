@@ -37,7 +37,7 @@ Features:
 The free, open-source Kuali desktop app is required. The extension connects
 only to Kuali on `127.0.0.1`; it has no Kuali-operated cloud backend and does
 not retain media in extension storage. The desktop app retains audio, visible
-tab video, or diagnostics only when you enable those local settings. Those
+tab video, or diagnostics only when you enable those local options. Those
 files never go to an AI provider or webhook; transcripts leave the computer
 only when you configure a summary provider, Discord delivery, or a webhook.
 

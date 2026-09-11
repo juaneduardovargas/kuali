@@ -27,3 +27,17 @@ export function isKualiHealthMessage(data) {
     return false;
   }
 }
+
+export function captureDefaultsFromHealthMessage(data) {
+  try {
+    const message = typeof data === "string" ? JSON.parse(data) : data;
+    if (!isKualiHealthMessage(message)) return null;
+    return {
+      audio: message.capture?.audio === true,
+      screen: message.capture?.screen === true,
+      diagnostics: message.capture?.diagnostics === true,
+    };
+  } catch {
+    return null;
+  }
+}

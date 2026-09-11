@@ -8,7 +8,12 @@ import {
   mapFrameChannel,
   SCREEN_RECORDING_WEBM,
 } from "../src/protocol.js";
-import { healthUrl, isKualiHealthMessage, isValidPairingToken } from "../src/health.js";
+import {
+  captureDefaultsFromHealthMessage,
+  healthUrl,
+  isKualiHealthMessage,
+  isValidPairingToken,
+} from "../src/health.js";
 import {
   fallbackFramesAfterSeparateAudio,
   meetingPresence,
@@ -58,6 +63,14 @@ test("the health handshake only accepts Kuali on the configured loopback port", 
     protocol: "capture.v1",
   })), true);
   assert.equal(isKualiHealthMessage('{"type":"ready"}'), false);
+  assert.deepEqual(captureDefaultsFromHealthMessage(JSON.stringify({
+    type: "health",
+    service: "kuali",
+    status: "ready",
+    protocol: "capture.v1",
+    capture: { audio: true, screen: true, diagnostics: false },
+  })), { audio: true, screen: true, diagnostics: false });
+  assert.equal(captureDefaultsFromHealthMessage('{"type":"ready"}'), null);
   assert.throws(() => healthUrl(0, "secret"), RangeError);
   assert.equal(isValidPairingToken("0123456789abcdef0123456789ABCDEF"), true);
   assert.equal(isValidPairingToken(""), false);

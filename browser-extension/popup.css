@@ -65,6 +65,32 @@ main { padding: 16px 18px 18px; }
   cursor: pointer;
 }
 
+.capture-option {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  gap: 9px;
+  align-items: start;
+  margin: 12px 0;
+  padding: 11px;
+  border: 1px solid #25665d;
+  border-radius: 10px;
+  background: #0b2421;
+  cursor: pointer;
+}
+
+.capture-option input {
+  width: 16px;
+  height: 16px;
+  margin: 2px 0 0;
+  accent-color: #2dd4bf;
+}
+
+.capture-option span,
+.capture-option strong,
+.capture-option small { display: block; min-width: 0; }
+.capture-option strong { color: #e8fffb; font-size: 12px; }
+.capture-option small { margin-top: 3px; color: #8db9b2; font-size: 11px; line-height: 1.35; }
+
 .consent-check input {
   width: 16px;
   height: 16px;
