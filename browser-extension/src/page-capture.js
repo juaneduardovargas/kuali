@@ -2155,11 +2155,19 @@
     const pageTrack = pageMicrophone?.track || null;
     const senderDeviceId = clean(meetSenderTrack?.getSettings?.().deviceId);
     const pageDeviceId = clean(pageTrack?.getSettings?.().deviceId);
-    const deviceId = senderDeviceId || pageDeviceId;
-    const deviceSelection = senderDeviceId ? "sender" : (pageDeviceId ? "page" : "default");
+    // Teams commonly sends a MediaStreamAudioDestinationNode rather than the
+    // physical getUserMedia track. Its synthetic deviceId cannot be reopened.
+    // The page observation is the actual capture device and therefore wins for
+    // Teams; other platforms retain the sender-first behavior.
+    const preferPageDevice = platform === "microsoft_teams" && !!pageDeviceId;
+    const deviceId = preferPageDevice ? pageDeviceId : (senderDeviceId || pageDeviceId);
+    const deviceSelection = preferPageDevice
+      ? "page"
+      : (senderDeviceId ? "sender" : (pageDeviceId ? "page" : "default"));
 
     if (platform === "microsoft_teams") {
       let lastError = null;
+      const attemptFailures = [];
       for (const attempt of processedMicrophoneAttempts(deviceId)) {
         if (!captureDesired) throw new Error("Capture was cancelled before opening the microphone");
         try {
@@ -2169,19 +2177,29 @@
             requestProfile: attempt.profile,
             requestedAudio: attempt.constraints,
             deviceSelection,
+            attemptFailures,
           };
         } catch (error) {
           lastError = error;
+          attemptFailures.push({
+            profile: attempt.profile,
+            name: clean(error?.name) || "Error",
+            message: clean(error?.message) || String(error),
+            constraint: clean(error?.constraint) || null,
+          });
         }
       }
-      const fallbackTrack = meetSenderTrack || pageTrack;
+      // A getUserMedia observation is a real hardware capture. Prefer it over
+      // Teams' RTP sender, which can be a silent WebAudio destination track.
+      const fallbackTrack = pageTrack || meetSenderTrack;
       if (fallbackTrack && typeof fallbackTrack.clone === "function") {
         return {
           stream: new MediaStream([fallbackTrack.clone()]),
-          source: meetSenderTrack ? "sender-track-unprocessed-fallback" : "page-track-unprocessed-fallback",
+          source: pageTrack ? "page-track-unprocessed-fallback" : "sender-track-unprocessed-fallback",
           requestProfile: "unprocessed-fallback",
           requestedAudio: pageMicrophone?.audioConstraints || null,
           deviceSelection,
+          attemptFailures,
         };
       }
       throw lastError || new Error("Teams microphone device is unavailable");
@@ -2316,6 +2334,7 @@
       let microphoneProfile = null;
       let requestedAudio = null;
       let deviceSelection = null;
+      let microphoneAttemptFailures = [];
       if (platform !== "microsoft_teams" && sharedTrack && typeof sharedTrack.clone === "function") {
         nextMicStream = new MediaStream([sharedTrack.clone()]);
         microphoneSource = pageTrack ? "page-microphone-clone" : "sender-track-clone";
@@ -2332,6 +2351,7 @@
           requestProfile,
           requestedAudio: requested,
           deviceSelection: selectedBy,
+          attemptFailures,
           error,
         } = microphoneOutcome.value;
         if (error) {
@@ -2343,6 +2363,7 @@
         microphoneProfile = requestProfile;
         requestedAudio = requested;
         deviceSelection = selectedBy;
+        microphoneAttemptFailures = attemptFailures || [];
       }
       if (!captureIntentIsCurrent(intent, signal) || !running) {
         for (const track of nextMicStream?.getTracks?.() || []) track.stop();
@@ -2375,6 +2396,7 @@
           source: microphoneSource,
           requestProfile: microphoneProfile,
           deviceSelection,
+          attemptFailures: microphoneAttemptFailures,
           requested: audioProcessingRequest(requestedAudio),
           capturedTrack: audioTrackState(track),
           senderTrack: audioTrackState(senderTrack),

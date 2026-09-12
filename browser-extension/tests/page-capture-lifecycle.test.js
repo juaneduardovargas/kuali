@@ -13,6 +13,7 @@ function createHarness({
   deferAudioContextClose = false,
   deferMicrophone = false,
   rejectAecAll = false,
+  rejectProcessedMicrophone = false,
   rejectAudioWorklet = false,
   throwAudioWorklet = false,
   throwDecoderDecodeOnce = false,
@@ -386,6 +387,9 @@ function createHarness({
           if (rejectAecAll && constraints?.audio?.echoCancellation?.exact === "all") {
             return Promise.reject(new Error("system echo cancellation is unavailable"));
           }
+          if (rejectProcessedMicrophone && constraints?.audio?.echoCancellation) {
+            return Promise.reject(new Error("processed microphone request failed"));
+          }
           if (deferMicrophone) {
             return new Promise((resolve, reject) => microphoneResolvers.push({ resolve, reject }));
           }
@@ -689,6 +693,86 @@ test("Teams falls back from system echo cancellation to browser AEC on the same 
   assert.equal(sourceEvent?.detail?.source, "selected-device-processed");
   assert.equal(sourceEvent?.detail?.requestProfile, "aec-browser");
   assert.equal(sourceEvent?.detail?.deviceSelection, "sender");
+});
+
+test("Teams prefers the observed physical microphone over a synthetic sender device", async () => {
+  const harness = createHarness({
+    withPeerConnection: true,
+    topLevel: true,
+    hostname: "teams.live.com",
+  });
+  const pageStream = await harness.requestPageMicrophone({
+    audio: { deviceId: { exact: "c920-device" } },
+    video: false,
+  });
+  const pageTrack = pageStream.getAudioTracks()[0];
+  pageTrack.label = "HD Pro Webcam C920";
+
+  const peer = new harness.window.RTCPeerConnection();
+  const syntheticSender = new harness.FakeTrack("teams-audio-destination");
+  syntheticSender.label = "MediaStreamAudioDestinationNode";
+  syntheticSender.settings = {
+    deviceId: "synthetic-destination-device",
+    sampleRate: 48_000,
+    channelCount: 2,
+  };
+  peer.senders = [{
+    track: syntheticSender,
+    getParameters: () => ({ encodings: [{ active: true }] }),
+  }];
+
+  await harness.controlAndWait("start");
+  assert.equal(harness.microphoneRequestCount, 2);
+  assert.equal(harness.microphoneConstraints[1].audio.deviceId.exact, "c920-device");
+  const sourceEvent = harness.posts.find((message) => message.type === "meeting-event"
+    && message.kind === "microphone-source");
+  assert.equal(sourceEvent?.detail?.source, "selected-device-processed");
+  assert.equal(sourceEvent?.detail?.deviceSelection, "page");
+  assert.equal(sourceEvent?.detail?.attemptFailures.length, 0);
+});
+
+test("Teams falls back to the observed hardware track instead of a silent synthetic sender", async () => {
+  const harness = createHarness({
+    withPeerConnection: true,
+    topLevel: true,
+    hostname: "teams.live.com",
+    rejectProcessedMicrophone: true,
+  });
+  const pageStream = await harness.requestPageMicrophone({
+    audio: { deviceId: { exact: "c920-device" } },
+    video: false,
+  });
+  const pageTrack = pageStream.getAudioTracks()[0];
+  pageTrack.label = "HD Pro Webcam C920";
+  pageTrack.settings.echoCancellation = true;
+  pageTrack.settings.noiseSuppression = true;
+  pageTrack.settings.autoGainControl = true;
+
+  const peer = new harness.window.RTCPeerConnection();
+  const syntheticSender = new harness.FakeTrack("teams-audio-destination");
+  syntheticSender.label = "MediaStreamAudioDestinationNode";
+  syntheticSender.settings.deviceId = "synthetic-destination-device";
+  peer.senders = [{
+    track: syntheticSender,
+    getParameters: () => ({ encodings: [{ active: true }] }),
+  }];
+
+  await harness.controlAndWait("start");
+  assert.equal(harness.microphoneRequestCount, 4);
+  const sourceEvent = harness.posts.find((message) => message.type === "meeting-event"
+    && message.kind === "microphone-source");
+  assert.equal(sourceEvent?.detail?.source, "page-track-unprocessed-fallback");
+  assert.equal(sourceEvent?.detail?.deviceSelection, "page");
+  assert.equal(sourceEvent?.detail?.capturedTrack?.label, "HD Pro Webcam C920");
+  assert.equal(sourceEvent?.detail?.capturedTrack?.echoCancellation, true);
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(sourceEvent?.detail?.attemptFailures.map(({ profile }) => profile))),
+    ["aec-all", "aec-browser", "aec-preferred"],
+  );
+  const microphoneProcessor = harness.trackProcessors.find(
+    (processor) => processor.track.id === `${pageTrack.id}-clone`,
+  );
+  assert(microphoneProcessor, "the physical microphone fallback must be captured");
 });
 
 async function prepareRoutedMeetReceiver(harness, trackId = "routed-remote-audio") {
