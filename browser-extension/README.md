@@ -76,7 +76,11 @@ platform, and an `audioKind` of either `separate` or `mixed`.
   participant collection when available or from a one-time, confidence-gated
   CSRC/activity correlation; later audio never follows the visual glow.
 - Teams (experimental): captures individual WebRTC tracks when Teams exposes
-  them and maps voice-outline activity to the corresponding participant.
+  them and maps voice-outline activity to the corresponding participant. For
+  the local participant, Kuali opens only the microphone selected by Teams with
+  system or browser echo cancellation instead of cloning Teams' possibly raw
+  processing track. The requested and applied audio-processing settings are
+  included in the local diagnostics.
 - Zoom (experimental): captures separate WebRTC tracks when the active Zoom
   mode exposes them.
   If none appear, an offscreen `tabCapture` fallback preserves the meeting as

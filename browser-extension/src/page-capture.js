@@ -28,11 +28,11 @@
   const nativeGetUserMedia = mediaDevices?.getUserMedia?.bind(mediaDevices) || null;
   const observedPageMicrophones = new Map();
 
-  function rememberPageMicrophone(stream) {
+  function rememberPageMicrophone(stream, audioConstraints = true) {
     if (!(stream instanceof MediaStream)) return;
     for (const track of stream.getAudioTracks()) {
       if (track.readyState === "ended") continue;
-      const observation = { track, observedAt: Date.now() };
+      const observation = { track, observedAt: Date.now(), audioConstraints };
       observedPageMicrophones.set(track.id, observation);
       track.addEventListener("ended", () => {
         if (observedPageMicrophones.get(track.id) === observation) {
@@ -48,7 +48,7 @@
   if (nativeGetUserMedia) {
     const observedGetUserMedia = async (...args) => {
       const stream = await nativeGetUserMedia(...args);
-      if (args[0]?.audio) rememberPageMicrophone(stream);
+      if (args[0]?.audio) rememberPageMicrophone(stream, args[0].audio);
       return stream;
     };
     try {
@@ -2065,32 +2065,152 @@
     sendMeetProbe(snapshot);
   }
 
-  async function openLocalMicrophone(meetSenderTrack) {
-    // A sender track is useful for discovering which physical microphone Meet
-    // selected, but Chrome does not guarantee that feeding the same RTP source
-    // into a second AudioContext will produce PCM. Open a fresh, readable
-    // stream from that device and apply Meet's data-is-muted state before any
-    // samples leave the page.
-    const deviceId = clean(meetSenderTrack?.getSettings?.().deviceId);
+  function processingConstraintValue(value) {
+    if (value === undefined || value === null) return null;
+    if (typeof value !== "object") return value;
+    const summary = {};
+    if (Object.hasOwn(value, "exact")) summary.exact = value.exact;
+    if (Object.hasOwn(value, "ideal")) summary.ideal = value.ideal;
+    return Object.keys(summary).length ? summary : null;
+  }
+
+  function audioProcessingRequest(audioConstraints) {
+    if (!audioConstraints || typeof audioConstraints !== "object") {
+      return {
+        echoCancellation: null,
+        noiseSuppression: null,
+        autoGainControl: null,
+        channelCount: null,
+        exactDevice: false,
+      };
+    }
+    return {
+      echoCancellation: processingConstraintValue(audioConstraints.echoCancellation),
+      noiseSuppression: processingConstraintValue(audioConstraints.noiseSuppression),
+      autoGainControl: processingConstraintValue(audioConstraints.autoGainControl),
+      channelCount: processingConstraintValue(audioConstraints.channelCount),
+      exactDevice: !!processingConstraintValue(audioConstraints.deviceId)?.exact,
+    };
+  }
+
+  function audioTrackState(track) {
+    if (!track) return null;
+    const settings = track.getSettings?.() || {};
+    const constraints = track.getConstraints?.() || {};
+    return {
+      trackId: track.id || null,
+      label: clean(track.label) || null,
+      enabled: !!track.enabled,
+      muted: !!track.muted,
+      readyState: track.readyState || null,
+      sampleRate: Number(settings.sampleRate) || null,
+      channelCount: Number(settings.channelCount) || null,
+      echoCancellation: settings.echoCancellation ?? null,
+      noiseSuppression: settings.noiseSuppression ?? null,
+      autoGainControl: settings.autoGainControl ?? null,
+      constraints: audioProcessingRequest(constraints),
+      hasDeviceId: !!clean(settings.deviceId),
+    };
+  }
+
+  function processedMicrophoneAttempts(deviceId) {
+    const selectedDevice = deviceId ? { deviceId: { exact: deviceId } } : {};
+    const processing = {
+      noiseSuppression: { ideal: true },
+      autoGainControl: { ideal: true },
+      channelCount: { ideal: 1 },
+    };
+    return [
+      {
+        profile: "aec-all",
+        constraints: {
+          ...selectedDevice,
+          echoCancellation: { exact: "all" },
+          ...processing,
+        },
+      },
+      {
+        profile: "aec-browser",
+        constraints: {
+          ...selectedDevice,
+          echoCancellation: { exact: true },
+          ...processing,
+        },
+      },
+      {
+        profile: "aec-preferred",
+        constraints: {
+          ...selectedDevice,
+          echoCancellation: { ideal: true },
+          ...processing,
+        },
+      },
+    ];
+  }
+
+  async function openLocalMicrophone(meetSenderTrack, pageMicrophone = null) {
+    // Use Teams' chosen hardware only as a device selector. Its page track may
+    // intentionally disable AEC/NS/AGC for Teams' own downstream processing;
+    // cloning that raw track makes loudspeaker playback look like local speech.
+    const pageTrack = pageMicrophone?.track || null;
+    const senderDeviceId = clean(meetSenderTrack?.getSettings?.().deviceId);
+    const pageDeviceId = clean(pageTrack?.getSettings?.().deviceId);
+    const deviceId = senderDeviceId || pageDeviceId;
+    const deviceSelection = senderDeviceId ? "sender" : (pageDeviceId ? "page" : "default");
+
+    if (platform === "microsoft_teams") {
+      let lastError = null;
+      for (const attempt of processedMicrophoneAttempts(deviceId)) {
+        if (!captureDesired) throw new Error("Capture was cancelled before opening the microphone");
+        try {
+          return {
+            stream: await nativeGetUserMedia({ audio: attempt.constraints, video: false }),
+            source: deviceId ? "selected-device-processed" : "default-device-processed",
+            requestProfile: attempt.profile,
+            requestedAudio: attempt.constraints,
+            deviceSelection,
+          };
+        } catch (error) {
+          lastError = error;
+        }
+      }
+      const fallbackTrack = meetSenderTrack || pageTrack;
+      if (fallbackTrack && typeof fallbackTrack.clone === "function") {
+        return {
+          stream: new MediaStream([fallbackTrack.clone()]),
+          source: meetSenderTrack ? "sender-track-unprocessed-fallback" : "page-track-unprocessed-fallback",
+          requestProfile: "unprocessed-fallback",
+          requestedAudio: pageMicrophone?.audioConstraints || null,
+          deviceSelection,
+        };
+      }
+      throw lastError || new Error("Teams microphone device is unavailable");
+    }
+
+    // Meet uses the sender track to identify its selected physical device. A
+    // fresh stream remains the compatibility fallback when no shared track can
+    // be cloned by startMic().
     if (deviceId) {
       try {
+        const constraints = { deviceId: { exact: deviceId } };
         return {
-          stream: await nativeGetUserMedia({
-            audio: { deviceId: { exact: deviceId } },
-            video: false,
-          }),
+          stream: await nativeGetUserMedia({ audio: constraints, video: false }),
           source: "selected-device-stream",
+          requestProfile: "device-only",
+          requestedAudio: constraints,
+          deviceSelection,
         };
       } catch (error) {
         if (!captureDesired) throw error;
-        // Meet can replace a device while joining. Falling back to the current
-        // default is preferable to leaving the local participant silent.
       }
     }
     if (!captureDesired) throw new Error("Capture was cancelled before opening the microphone");
     return {
       stream: await nativeGetUserMedia({ audio: true, video: false }),
       source: "default-device-stream",
+      requestProfile: "browser-default",
+      requestedAudio: true,
+      deviceSelection: "default",
     };
   }
 
@@ -2112,20 +2232,20 @@
       || null;
   }
 
-  function observedPageMicrophoneTrack() {
+  function observedPageMicrophone() {
     return [...observedPageMicrophones.values()]
       .filter(({ track }) => track.readyState === "live")
-      .sort((left, right) => right.observedAt - left.observedAt)[0]?.track || null;
+      .sort((left, right) => right.observedAt - left.observedAt)[0] || null;
   }
 
-  function acquirePendingMicrophoneRequest(meetSenderTrack) {
+  function acquirePendingMicrophoneRequest(meetSenderTrack, pageMicrophone = null) {
     if (pendingMicrophoneRequest) return pendingMicrophoneRequest;
     const request = {
       claimed: false,
       promise: null,
     };
-    request.promise = Promise.resolve(openLocalMicrophone(meetSenderTrack)).then(
-      ({ stream, source }) => ({ stream, source, error: null }),
+    request.promise = Promise.resolve(openLocalMicrophone(meetSenderTrack, pageMicrophone)).then(
+      (result) => ({ ...result, error: null }),
       (error) => ({ stream: null, source: null, error }),
     );
     pendingMicrophoneRequest = request;
@@ -2185,27 +2305,44 @@
       const senderTrack = ["google_meet", "microsoft_teams"].includes(platform)
         ? localAudioSenderTrack()
         : null;
-      const pageTrack = ["google_meet", "microsoft_teams"].includes(platform)
-        ? observedPageMicrophoneTrack()
+      const pageMicrophone = ["google_meet", "microsoft_teams"].includes(platform)
+        ? observedPageMicrophone()
         : null;
+      const pageTrack = pageMicrophone?.track || null;
       const sharedTrack = pageTrack || senderTrack;
       let microphoneRequest = null;
       let nextMicStream = null;
       let microphoneSource = null;
-      if (sharedTrack && typeof sharedTrack.clone === "function") {
+      let microphoneProfile = null;
+      let requestedAudio = null;
+      let deviceSelection = null;
+      if (platform !== "microsoft_teams" && sharedTrack && typeof sharedTrack.clone === "function") {
         nextMicStream = new MediaStream([sharedTrack.clone()]);
         microphoneSource = pageTrack ? "page-microphone-clone" : "sender-track-clone";
+        microphoneProfile = "shared-track-clone";
+        requestedAudio = pageMicrophone?.audioConstraints || null;
+        deviceSelection = pageTrack ? "page" : "sender";
       } else {
-        microphoneRequest = acquirePendingMicrophoneRequest(senderTrack);
+        microphoneRequest = acquirePendingMicrophoneRequest(senderTrack, pageMicrophone);
         const microphoneOutcome = await awaitCaptureStep(microphoneRequest.promise, signal);
         if (microphoneOutcome.cancelled) return false;
-        const { stream, source, error } = microphoneOutcome.value;
+        const {
+          stream,
+          source,
+          requestProfile,
+          requestedAudio: requested,
+          deviceSelection: selectedBy,
+          error,
+        } = microphoneOutcome.value;
         if (error) {
           if (pendingMicrophoneRequest === microphoneRequest) pendingMicrophoneRequest = null;
           throw error;
         }
         nextMicStream = stream;
         microphoneSource = source;
+        microphoneProfile = requestProfile;
+        requestedAudio = requested;
+        deviceSelection = selectedBy;
       }
       if (!captureIntentIsCurrent(intent, signal) || !running) {
         for (const track of nextMicStream?.getTracks?.() || []) track.stop();
@@ -2236,6 +2373,13 @@
         meetingEvent("microphone-source", {
           channel: MIC_CHANNEL,
           source: microphoneSource,
+          requestProfile: microphoneProfile,
+          deviceSelection,
+          requested: audioProcessingRequest(requestedAudio),
+          capturedTrack: audioTrackState(track),
+          senderTrack: audioTrackState(senderTrack),
+          observedPageTrack: audioTrackState(pageTrack),
+          observedPageRequest: audioProcessingRequest(pageMicrophone?.audioConstraints),
           enabled: !!track.enabled,
           muted: !!track.muted,
           readyState: track.readyState || null,

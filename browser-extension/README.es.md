@@ -68,6 +68,10 @@ la RAM. Para una prueba rápida de una sola persona usa
   tras varios cientos de milisegundos de voz decodificada inequívoca; el audio
   posterior nunca persigue el brillo visual.
 - Teams (experimental) usa pistas WebRTC individuales cuando la web las expone.
+  Para el participante local, Kuali abre únicamente el micrófono seleccionado
+  por Teams con cancelación de eco del sistema o del navegador, en lugar de
+  clonar una pista interna de Teams que puede estar sin procesar. El diagnóstico
+  local registra los ajustes de procesamiento solicitados y aplicados.
 - Zoom (experimental) intenta lo mismo. Si ese modo no expone pistas WebRTC, un `tabCapture`
   aislado conserva la reunión como un canal `mixed`. El fallback se descarta tan
   pronto como aparece una pista individual, para no transcribir ambas rutas.

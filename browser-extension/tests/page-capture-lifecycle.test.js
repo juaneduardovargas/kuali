@@ -12,6 +12,7 @@ function createHarness({
   autoDecode = true,
   deferAudioContextClose = false,
   deferMicrophone = false,
+  rejectAecAll = false,
   rejectAudioWorklet = false,
   throwAudioWorklet = false,
   throwDecoderDecodeOnce = false,
@@ -52,6 +53,8 @@ function createHarness({
       this.muted = false;
       this.readyState = "live";
       this.settings = {};
+      this.constraints = {};
+      this.capabilities = {};
       this.listeners = new Map();
     }
 
@@ -65,12 +68,22 @@ function createHarness({
       return this.settings;
     }
 
+    getConstraints() {
+      return this.constraints;
+    }
+
+    getCapabilities() {
+      return this.capabilities;
+    }
+
     clone() {
       const clone = new FakeTrack(`${this.id}-clone`);
       clone.label = this.label;
       clone.enabled = this.enabled;
       clone.muted = this.muted;
       clone.settings = { ...this.settings };
+      clone.constraints = { ...this.constraints };
+      clone.capabilities = { ...this.capabilities };
       return clone;
     }
 
@@ -370,10 +383,34 @@ function createHarness({
           microphoneRequestCount += 1;
           microphoneConstraints.push(constraints);
           notifyMicrophoneRequested();
+          if (rejectAecAll && constraints?.audio?.echoCancellation?.exact === "all") {
+            return Promise.reject(new Error("system echo cancellation is unavailable"));
+          }
           if (deferMicrophone) {
             return new Promise((resolve, reject) => microphoneResolvers.push({ resolve, reject }));
           }
-          return Promise.resolve(new FakeMediaStream([new FakeTrack("local-mic")]));
+          const track = new FakeTrack("local-mic");
+          const audio = constraints?.audio;
+          if (audio && typeof audio === "object") {
+            track.constraints = { ...audio };
+            track.settings = {
+              deviceId: audio.deviceId?.exact || "",
+              echoCancellation: audio.echoCancellation?.exact
+                ?? audio.echoCancellation?.ideal
+                ?? null,
+              noiseSuppression: audio.noiseSuppression?.exact
+                ?? audio.noiseSuppression?.ideal
+                ?? null,
+              autoGainControl: audio.autoGainControl?.exact
+                ?? audio.autoGainControl?.ideal
+                ?? null,
+              channelCount: audio.channelCount?.exact
+                ?? audio.channelCount?.ideal
+                ?? null,
+              sampleRate: 48_000,
+            };
+          }
+          return Promise.resolve(new FakeMediaStream([track]));
         },
       },
     },
@@ -526,13 +563,23 @@ test("Teams reopens the exact sender device for readable microphone PCM", async 
   assert.equal(harness.microphoneRequestCount, 1);
   assert.deepEqual(
     JSON.parse(JSON.stringify(harness.microphoneConstraints[0])),
-    { audio: { deviceId: { exact: "c920-device" } }, video: false },
+    {
+      audio: {
+        deviceId: { exact: "c920-device" },
+        echoCancellation: { exact: "all" },
+        noiseSuppression: { ideal: true },
+        autoGainControl: { ideal: true },
+        channelCount: { ideal: 1 },
+      },
+      video: false,
+    },
   );
-  assert(
-    harness.posts.some((message) => message.type === "meeting-event"
-      && message.kind === "microphone-source"
-      && message.detail?.source === "selected-device-stream"),
-  );
+  const sourceEvent = harness.posts.find((message) => message.type === "meeting-event"
+    && message.kind === "microphone-source");
+  assert.equal(sourceEvent?.detail?.source, "selected-device-processed");
+  assert.equal(sourceEvent?.detail?.requestProfile, "aec-all");
+  assert.equal(sourceEvent?.detail?.deviceSelection, "sender");
+  assert.equal(sourceEvent?.detail?.capturedTrack?.echoCancellation, "all");
   for (let attempt = 0; attempt < 4
     && !harness.trackProcessors.some((processor) => processor.track.id === "local-mic"); attempt += 1) {
     await harness.flush();
@@ -554,38 +601,94 @@ test("Teams reopens the exact sender device for readable microphone PCM", async 
   );
 });
 
-test("Teams clones the microphone stream the page already opened", async () => {
+test("Teams opens an echo-cancelled stream on the exact microphone selected by the page", async () => {
   const harness = createHarness({
     topLevel: true,
     hostname: "teams.microsoft.com",
   });
-  const pageStream = await harness.requestPageMicrophone();
+  const pageStream = await harness.requestPageMicrophone({
+    audio: {
+      deviceId: { exact: "c920-device" },
+      echoCancellation: { ideal: false },
+      noiseSuppression: { ideal: false },
+      autoGainControl: { ideal: false },
+    },
+    video: false,
+  });
   const pageTrack = pageStream.getAudioTracks()[0];
   pageTrack.label = "HD Pro Webcam C920";
 
   await harness.controlAndWait("start");
-  assert.equal(harness.microphoneRequestCount, 1, "Kuali must not open the webcam a second time");
-  assert(
-    harness.posts.some((message) => message.type === "meeting-event"
-      && message.kind === "microphone-source"
-      && message.detail?.source === "page-microphone-clone"),
+  assert.equal(harness.microphoneRequestCount, 2);
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(harness.microphoneConstraints[1])),
+    {
+      audio: {
+        deviceId: { exact: "c920-device" },
+        echoCancellation: { exact: "all" },
+        noiseSuppression: { ideal: true },
+        autoGainControl: { ideal: true },
+        channelCount: { ideal: 1 },
+      },
+      video: false,
+    },
+  );
+  const sourceEvent = harness.posts.find((message) => message.type === "meeting-event"
+    && message.kind === "microphone-source");
+  assert.equal(sourceEvent?.detail?.source, "selected-device-processed");
+  assert.equal(sourceEvent?.detail?.requestProfile, "aec-all");
+  assert.equal(sourceEvent?.detail?.deviceSelection, "page");
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(sourceEvent?.detail?.observedPageRequest)),
+    {
+      echoCancellation: { ideal: false },
+      noiseSuppression: { ideal: false },
+      autoGainControl: { ideal: false },
+      channelCount: null,
+      exactDevice: true,
+    },
   );
   for (let attempt = 0; attempt < 4
-    && !harness.trackProcessors.some((processor) => processor.track.id === `${pageTrack.id}-clone`); attempt += 1) {
+    && !harness.trackProcessors.some((processor) => processor.track.id === "local-mic"); attempt += 1) {
     await harness.flush();
   }
-  const microphoneProcessor = harness.trackProcessors.find(
-    (processor) => processor.track.id === `${pageTrack.id}-clone`,
-  );
-  assert(microphoneProcessor, "the cloned Teams microphone must use the native track processor");
+  const microphoneProcessor = harness.trackProcessors.find((processor) => processor.track.id === "local-mic");
+  assert(microphoneProcessor, "the processed Teams microphone must use the native track processor");
   for (let index = 0; index < 8; index += 1) {
     harness.pushLocalTrackFrame(microphoneProcessor.track);
     await harness.flush();
   }
   assert(
     harness.posts.some((message) => message.type === "audio" && message.channel === 1000),
-    "the cloned Teams microphone must reach the reserved local channel",
+    "the processed Teams microphone must reach the reserved local channel",
   );
+});
+
+test("Teams falls back from system echo cancellation to browser AEC on the same device", async () => {
+  const harness = createHarness({
+    withPeerConnection: true,
+    topLevel: true,
+    hostname: "teams.live.com",
+    rejectAecAll: true,
+  });
+  const peer = new harness.window.RTCPeerConnection();
+  const microphone = new harness.FakeTrack("teams-sender-microphone");
+  microphone.settings.deviceId = "c920-device";
+  peer.senders = [{
+    track: microphone,
+    getParameters: () => ({ encodings: [{ active: true }] }),
+  }];
+
+  await harness.controlAndWait("start");
+  assert.equal(harness.microphoneRequestCount, 2);
+  assert.equal(harness.microphoneConstraints[0].audio.echoCancellation.exact, "all");
+  assert.equal(harness.microphoneConstraints[1].audio.deviceId.exact, "c920-device");
+  assert.equal(harness.microphoneConstraints[1].audio.echoCancellation.exact, true);
+  const sourceEvent = harness.posts.find((message) => message.type === "meeting-event"
+    && message.kind === "microphone-source");
+  assert.equal(sourceEvent?.detail?.source, "selected-device-processed");
+  assert.equal(sourceEvent?.detail?.requestProfile, "aec-browser");
+  assert.equal(sourceEvent?.detail?.deviceSelection, "sender");
 });
 
 async function prepareRoutedMeetReceiver(harness, trackId = "routed-remote-audio") {
