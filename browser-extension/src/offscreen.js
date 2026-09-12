@@ -148,7 +148,8 @@ async function stopRecordingGraph() {
 }
 
 async function stopTab() {
-  if (processor) processor.onaudioprocess = null;
+  if (processor?.port) processor.port.onmessage = null;
+  try { processor?.disconnect?.(); } catch (_) {}
   await drainMicrophoneMix();
   await stopRecorder();
   await stopRecordingGraph();
@@ -188,18 +189,27 @@ async function startTab(streamId, sourceTabId, recordScreen = false) {
   playbackContext.createMediaStreamSource(stream).connect(playbackContext.destination);
 
   captureContext = new AudioContext({ sampleRate: TARGET_RATE, latencyHint: "interactive" });
+  await captureContext.audioWorklet.addModule(chrome.runtime.getURL("src/pcm-worklet.js"));
   const source = captureContext.createMediaStreamSource(stream);
-  processor = captureContext.createScriptProcessor(2048, 1, 1);
+  processor = new AudioWorkletNode(captureContext, "kuali-pcm", {
+    numberOfInputs: 1,
+    numberOfOutputs: 1,
+    outputChannelCount: [1],
+    // Match ScriptProcessor's former mono input: preserve tab content from
+    // both stereo sides through the browser's standard speaker downmix.
+    channelCount: 1,
+    channelCountMode: "explicit",
+    channelInterpretation: "speakers",
+  });
   source.connect(processor);
-  // ScriptProcessor leaves its output buffer silent. A direct connection keeps
-  // Chrome pulling tab audio without replaying it a second time; a zero-gain
-  // node can be optimized away on some remote WebRTC paths.
+  // The worklet leaves its output silent. A direct connection keeps Chrome
+  // pulling tab audio without replaying it a second time; a zero-gain node can
+  // be optimized away on some remote WebRTC paths.
   processor.connect(captureContext.destination);
-  processor.onaudioprocess = (event) => {
-    const samples = event.inputBuffer.getChannelData(0);
-    let peak = 0;
-    for (let i = 0; i < samples.length; i++) peak = Math.max(peak, Math.abs(samples[i]));
-    if (peak < 0.0005 || tabId == null) return;
+  processor.port.onmessage = (event) => {
+    if (tabId == null) return;
+    const samples = new Float32Array(event.data);
+    if (samples.length === 0 || samples.length > 8192) return;
     chrome.runtime.sendMessage({
       type: "mixed-audio",
       tabId,

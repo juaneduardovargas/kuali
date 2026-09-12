@@ -23,6 +23,7 @@ import {
 } from "./lifecycle.js";
 import {
   LOCAL_MICROPHONE_CHANNEL,
+  LOCAL_MICROPHONE_SAMPLE_RATE,
   shouldMixLocalMicrophone,
 } from "./recording-audio.js";
 
