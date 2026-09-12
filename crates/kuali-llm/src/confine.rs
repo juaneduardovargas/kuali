@@ -1,12 +1,13 @@
 //! Everything a locally installed CLI is allowed to touch.
 //!
 //! A transcript is text written by other people, and a CLI provider is an agent
-//! that can act on what it reads. Three layers keep that from mattering, each
-//! holding on its own if the others fail:
+//! that can act on what it reads. Three layers reduce that input to text-only
+//! analysis and make a failure in one layer insufficient to expose the host:
 //!
 //! 1. The CLI is asked to refuse tools ([`tool_restrictions`]).
 //! 2. Its environment is emptied of everything it was not given ([`inherited`]).
-//! 3. On macOS the kernel denies it the home folder outright ([`profile`]).
+//! 3. On macOS the kernel denies the real home folder and child processes
+//!    outright ([`profile`]).
 //!
 //! Kuali never needs any of this to succeed: retrieved passages reach the CLI on
 //! stdin, so reading the meeting index is not a capability it has to keep.
@@ -18,9 +19,7 @@
 //! confine, and the ports would otherwise ship with one layer missing.
 
 use std::ffi::{OsStr, OsString};
-use std::path::Path;
-#[cfg(target_os = "macos")]
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use tokio::process::Command;
 
@@ -32,9 +31,8 @@ use tokio::process::Command;
 struct Confinement {
     program: &'static str,
     restrictions: &'static [&'static str],
-    /// Paths relative to the home folder that the CLI itself owns. Only the
-    /// kernel layer reads them, so on a platform that has none yet the list sits
-    /// unused — deliberately, because a port needs it before it can write one.
+    /// Legacy provider paths relative to HOME that still have to be reopened.
+    /// Codex deliberately has none: it receives only an ephemeral auth copy.
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     owned: &'static [&'static str],
 }
@@ -56,10 +54,70 @@ const CONFINEMENTS: &[Confinement] = &[
     },
     Confinement {
         program: "codex",
-        // Read-only mode prevents filesystem mutation. Codex can still read, so
-        // the kernel layer is what actually closes that door.
-        restrictions: &["--sandbox", "read-only"],
-        owned: &[".codex"],
+        // A meeting transcript is untrusted input, not an agent task. Do not
+        // inherit the user's MCP servers, hooks, plugins, rules, skills or
+        // session history, and remove every feature that can act on the host.
+        // Unknown or removed flags make Codex fail closed after an incompatible
+        // CLI upgrade instead of silently regaining a tool.
+        restrictions: &[
+            "--sandbox",
+            "read-only",
+            "--ephemeral",
+            "--ignore-user-config",
+            "--ignore-rules",
+            "--strict-config",
+            "-c",
+            "approval_policy=\"never\"",
+            "--disable",
+            "apps",
+            "--disable",
+            "browser_use",
+            "--disable",
+            "browser_use_external",
+            "--disable",
+            "browser_use_full_cdp_access",
+            "--disable",
+            "code_mode_host",
+            "--disable",
+            "computer_use",
+            "--disable",
+            "goals",
+            "--disable",
+            "hooks",
+            "--disable",
+            "image_generation",
+            "--disable",
+            "in_app_browser",
+            "--disable",
+            "in_app_local_automation",
+            "--disable",
+            "multi_agent",
+            "--disable",
+            "plugins",
+            "--disable",
+            "shell_snapshot",
+            "--disable",
+            "shell_tool",
+            "--disable",
+            "skill_mcp_dependency_install",
+            "--disable",
+            "skill_search",
+            "--disable",
+            "sleep_tool",
+            "--disable",
+            "tool_call_mcp_elicitation",
+            "--disable",
+            "tool_suggest",
+            "--disable",
+            "unified_exec",
+            "--disable",
+            "view_image",
+            "--disable",
+            "workspace_dependencies",
+        ],
+        // Authentication lives in the private scratch directory; exposing the
+        // real directory would also expose config, MCPs and past sessions.
+        owned: &[],
     },
     Confinement {
         program: "gemini",
@@ -81,6 +139,20 @@ pub(crate) fn tool_restrictions(program: &str) -> Vec<String> {
     confinement(program)
         .map(|entry| entry.restrictions.iter().map(|s| s.to_string()).collect())
         .unwrap_or_default()
+}
+
+/// Codex app-server has no `--ignore-user-config` switch. It receives a minimal
+/// synthetic CODEX_HOME instead, while these global options keep every host
+/// capability disabled if the server ever handles more than `model/list`.
+pub(crate) fn codex_service_restrictions() -> Vec<String> {
+    let summary = tool_restrictions("codex");
+    let mut service = vec!["--strict-config".to_string()];
+    for pair in summary.windows(2) {
+        if pair[0] == "--disable" || pair[0] == "-c" {
+            service.extend(pair.iter().cloned());
+        }
+    }
+    service
 }
 
 /// Environment variables a confined CLI keeps. Everything else is dropped,
@@ -160,6 +232,77 @@ pub(crate) fn apply_environment(command: &mut Command, search_path: &OsStr) {
     command.env("PATH", search_path);
 }
 
+/// A private, single-use working directory for one meeting analysis.
+///
+/// Codex gets a synthetic HOME and a synthetic CODEX_HOME containing only a
+/// private copy of `auth.json`. It cannot discover personal configuration,
+/// sessions, MCP servers or plugins by walking from the real home directory.
+pub(crate) struct SummarySandbox {
+    directory: tempfile::TempDir,
+    home: PathBuf,
+    temporary: PathBuf,
+    codex_home: Option<PathBuf>,
+}
+
+impl SummarySandbox {
+    pub(crate) fn new(program: &str) -> Result<Self, String> {
+        let directory = tempfile::Builder::new()
+            .prefix("kuali-summary-")
+            .tempdir()
+            .map_err(|error| format!("no se pudo crear el aislamiento temporal: {error}"))?;
+        let home = directory.path().join("home");
+        let temporary = directory.path().join("tmp");
+        std::fs::create_dir_all(&home)
+            .and_then(|_| std::fs::create_dir_all(&temporary))
+            .map_err(|error| format!("no se pudo preparar el aislamiento temporal: {error}"))?;
+
+        let codex_home = if program == "codex" {
+            let source = codex_home_directory().join("auth.json");
+            let isolated = directory.path().join("codex-home");
+            std::fs::create_dir_all(&isolated).map_err(|error| {
+                format!("no se pudo preparar la autenticación aislada de Codex: {error}")
+            })?;
+            let destination = isolated.join("auth.json");
+            std::fs::copy(&source, &destination).map_err(|error| {
+                format!(
+                    "no se pudo copiar la sesión de Codex desde {}: {error}",
+                    source.display()
+                )
+            })?;
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&destination, std::fs::Permissions::from_mode(0o600))
+                    .map_err(|error| {
+                        format!("no se pudieron proteger las credenciales temporales: {error}")
+                    })?;
+            }
+            Some(isolated)
+        } else {
+            None
+        };
+
+        Ok(Self {
+            directory,
+            home,
+            temporary,
+            codex_home,
+        })
+    }
+
+    pub(crate) fn path(&self) -> &Path {
+        self.directory.path()
+    }
+
+    pub(crate) fn apply(&self, command: &mut Command) {
+        command.env("TMPDIR", &self.temporary);
+        if let Some(codex_home) = &self.codex_home {
+            command.env("HOME", &self.home);
+            command.env("CODEX_HOME", codex_home);
+        }
+    }
+}
+
 /// What has to stay alive for as long as the confined CLI runs. On macOS that
 /// is the sandbox profile on disk. A platform with no kernel layer never
 /// reaches this, which is why there is nothing for it to hold.
@@ -176,6 +319,7 @@ pub(crate) fn launch(
     program: &str,
     executable: &Path,
     search_path: &OsStr,
+    scratch: &Path,
 ) -> Result<(Command, Guard), String> {
     if confinement(program).is_none() {
         return Err(format!(
@@ -184,7 +328,7 @@ pub(crate) fn launch(
         ));
     }
 
-    isolate(program, executable, search_path)
+    isolate(program, executable, search_path, scratch)
 }
 
 #[cfg(target_os = "macos")]
@@ -192,10 +336,12 @@ fn isolate(
     program: &str,
     executable: &Path,
     search_path: &OsStr,
+    scratch: &Path,
 ) -> Result<(Command, Guard), String> {
-    let written = Profile::write(&profile(program, executable, search_path)).map_err(|error| {
-        format!("no se pudo escribir el perfil de aislamiento de `{program}`: {error}")
-    })?;
+    let written =
+        Profile::write(&profile(program, executable, search_path, scratch)).map_err(|error| {
+            format!("no se pudo escribir el perfil de aislamiento de `{program}`: {error}")
+        })?;
 
     let mut command = Command::new("/usr/bin/sandbox-exec");
     command.arg("-f").arg(written.path()).arg(executable);
@@ -208,6 +354,7 @@ fn isolate(
     program: &str,
     _executable: &Path,
     _search_path: &OsStr,
+    _scratch: &Path,
 ) -> Result<(Command, Guard), String> {
     Err(format!(
         "Kuali todavía no sabe aislar procesos en este sistema, \
@@ -218,26 +365,25 @@ fn isolate(
 #[cfg(target_os = "macos")]
 /// A sandbox profile on disk, removed when the launch is over.
 pub(crate) struct Profile {
-    path: PathBuf,
+    file: tempfile::NamedTempFile,
 }
 
 #[cfg(target_os = "macos")]
 impl Profile {
     fn write(text: &str) -> std::io::Result<Self> {
-        let path = std::env::temp_dir().join(format!("kuali-sandbox-{}.sb", uuid::Uuid::new_v4()));
-        std::fs::write(&path, text)?;
-        Ok(Self { path })
+        use std::io::Write;
+
+        let mut file = tempfile::Builder::new()
+            .prefix("kuali-sandbox-")
+            .suffix(".sb")
+            .tempfile()?;
+        file.write_all(text.as_bytes())?;
+        file.flush()?;
+        Ok(Self { file })
     }
 
     pub(crate) fn path(&self) -> &Path {
-        &self.path
-    }
-}
-
-#[cfg(target_os = "macos")]
-impl Drop for Profile {
-    fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.path);
+        self.file.path()
     }
 }
 
@@ -248,9 +394,14 @@ impl Drop for Profile {
 /// matching rule. Network access stays open: the CLI's whole job is to reach
 /// its own API.
 #[cfg(target_os = "macos")]
-pub(crate) fn profile(program: &str, executable: &Path, search_path: &OsStr) -> String {
+pub(crate) fn profile(
+    program: &str,
+    executable: &Path,
+    search_path: &OsStr,
+    scratch: &Path,
+) -> String {
     let home = real_path(&home_directory());
-    let temp = real_path(&std::env::temp_dir());
+    let scratch = real_path(scratch);
 
     let mut lines = vec![
         "(version 1)".to_string(),
@@ -264,6 +415,19 @@ pub(crate) fn profile(program: &str, executable: &Path, search_path: &OsStr) -> 
         "; Reopened: the runtime that executes the CLI.".to_string(),
     ];
 
+    if program == "codex" {
+        // Even a future Codex regression cannot launch a shell, hook, MCP
+        // server, installer or helper. sandbox-exec itself must still be able
+        // to replace its process with the reviewed Codex executable.
+        lines.push("(deny process-exec)".to_string());
+        for allowed in [executable.to_path_buf(), real_path(executable)] {
+            let rule = format!("(allow process-exec (literal {}))", quote(&allowed));
+            if !lines.contains(&rule) {
+                lines.push(rule);
+            }
+        }
+    }
+
     for directory in runtime_directories(executable, search_path, &home) {
         lines.push(format!(
             "(allow file-read* (subpath {}))",
@@ -272,7 +436,7 @@ pub(crate) fn profile(program: &str, executable: &Path, search_path: &OsStr) -> 
     }
 
     lines.push(String::new());
-    lines.push("; Reopened: the CLI's own configuration and stored session.".to_string());
+    lines.push("; Reopened: the minimum authentication material required by the CLI.".to_string());
     for owned in confinement(program).map(|entry| entry.owned).unwrap_or(&[]) {
         let path = real_path(&home.join(owned));
         lines.push(format!(
@@ -280,7 +444,7 @@ pub(crate) fn profile(program: &str, executable: &Path, search_path: &OsStr) -> 
             quote(&path)
         ));
     }
-    for relocated in ["CLAUDE_CONFIG_DIR", "CODEX_HOME"] {
+    for relocated in ["CLAUDE_CONFIG_DIR"] {
         if let Some(value) = std::env::var_os(relocated) {
             let path = real_path(Path::new(&value));
             lines.push(format!(
@@ -291,22 +455,26 @@ pub(crate) fn profile(program: &str, executable: &Path, search_path: &OsStr) -> 
     }
 
     lines.push(String::new());
-    lines.push("; Reopened: caches, credentials, and scratch space.".to_string());
-    for (relative, writable) in [
-        ("Library/Caches", true),
-        ("Library/Keychains", true),
-        ("Library/Preferences", false),
-    ] {
-        let path = real_path(&home.join(relative));
-        let operations = match writable {
-            true => "file-read* file-write*",
-            false => "file-read*",
-        };
-        lines.push(format!("(allow {operations} (subpath {}))", quote(&path)));
+    lines.push(
+        "; Reopened: provider support and this invocation's private scratch space.".to_string(),
+    );
+    if program != "codex" {
+        for (relative, writable) in [
+            ("Library/Caches", true),
+            ("Library/Keychains", true),
+            ("Library/Preferences", false),
+        ] {
+            let path = real_path(&home.join(relative));
+            let operations = match writable {
+                true => "file-read* file-write*",
+                false => "file-read*",
+            };
+            lines.push(format!("(allow {operations} (subpath {}))", quote(&path)));
+        }
     }
     lines.push(format!(
         "(allow file-read* file-write* (subpath {}))",
-        quote(&temp)
+        quote(&scratch)
     ));
     // Node and its children expect the null device and the terminal to work.
     lines.push("(allow file-write* (subpath \"/dev\"))".to_string());
@@ -351,11 +519,16 @@ fn runtime_directories(executable: &Path, search_path: &OsStr, home: &Path) -> V
     directories
 }
 
-#[cfg(target_os = "macos")]
 fn home_directory() -> PathBuf {
     directories::BaseDirs::new()
         .map(|dirs| dirs.home_dir().to_path_buf())
         .unwrap_or_else(|| PathBuf::from("/"))
+}
+
+fn codex_home_directory() -> PathBuf {
+    std::env::var_os("CODEX_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home_directory().join(".codex"))
 }
 
 /// Seatbelt matches resolved paths, and on macOS the temporary directory and the
@@ -387,11 +560,11 @@ mod tests {
                 !entry.restrictions.is_empty(),
                 "`{program}` no restringe herramientas"
             );
-            assert!(
-                !entry.owned.is_empty(),
-                "`{program}` no declara qué directorio suyo necesita"
-            );
         }
+        assert!(
+            confinement("codex").unwrap().owned.is_empty(),
+            "Codex no debe recuperar acceso a toda la carpeta .codex"
+        );
     }
 
     #[test]
@@ -402,6 +575,7 @@ mod tests {
             "cli-que-nadie-revisó",
             Path::new("/usr/bin/true"),
             OsStr::new("/usr/bin"),
+            Path::new("/tmp/kuali-summary-test"),
         )
         .map(|_| ())
         .unwrap_err();
@@ -427,6 +601,7 @@ mod tests {
             "claude",
             &home.join(".nvm/versions/node/v25.7.0/bin/claude"),
             OsStr::new("/usr/bin:/bin"),
+            Path::new("/tmp/kuali-summary-test"),
         );
 
         let denial = format!("(deny file-read* (subpath \"{}\"))", home.display());
@@ -447,7 +622,12 @@ mod tests {
         let home = real_path(&home_directory());
         let node = home.join(".nvm/versions/node/v25.7.0/bin");
         let path = std::env::join_paths([node.clone(), PathBuf::from("/usr/bin")]).unwrap();
-        let text = profile("claude", &node.join("claude"), &path);
+        let text = profile(
+            "claude",
+            &node.join("claude"),
+            &path,
+            Path::new("/tmp/kuali-summary-test"),
+        );
 
         assert!(
             text.contains(&format!("(subpath \"{}\")", node.display())),
@@ -470,7 +650,13 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[tokio::test]
     async fn a_sandboxed_process_cannot_read_the_home_folder() {
-        let text = profile("claude", Path::new("/bin/cat"), OsStr::new("/usr/bin:/bin"));
+        let scratch = tempfile::tempdir().unwrap();
+        let text = profile(
+            "claude",
+            Path::new("/bin/cat"),
+            OsStr::new("/usr/bin:/bin"),
+            scratch.path(),
+        );
         let written = Profile::write(&text).unwrap();
         let probe = home_directory().join(".kuali-sandbox-probe");
         std::fs::write(&probe, "secreto").unwrap();
@@ -487,5 +673,117 @@ mod tests {
         std::fs::remove_file(&probe).unwrap();
         assert!(!output.status.success());
         assert!(!String::from_utf8_lossy(&output.stdout).contains("secreto"));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn the_codex_profile_cannot_read_the_real_auth_file() {
+        let scratch = tempfile::tempdir().unwrap();
+        let text = profile(
+            "codex",
+            Path::new("/bin/cat"),
+            OsStr::new("/usr/bin:/bin"),
+            scratch.path(),
+        );
+        let written = Profile::write(&text).unwrap();
+        let output = tokio::process::Command::new("/usr/bin/sandbox-exec")
+            .arg("-f")
+            .arg(written.path())
+            .arg("/bin/cat")
+            .arg(codex_home_directory().join("auth.json"))
+            .output()
+            .await
+            .unwrap();
+
+        assert!(!output.status.success());
+        assert!(output.stdout.is_empty());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[tokio::test]
+    async fn the_codex_profile_cannot_launch_a_child_process() {
+        let scratch = tempfile::tempdir().unwrap();
+        let marker = scratch.path().join("child-ran");
+        let text = profile(
+            "codex",
+            Path::new("/bin/bash"),
+            OsStr::new("/usr/bin:/bin"),
+            scratch.path(),
+        );
+        let written = Profile::write(&text).unwrap();
+        let output = tokio::process::Command::new("/usr/bin/sandbox-exec")
+            .arg("-f")
+            .arg(written.path())
+            .arg("/bin/bash")
+            .arg("-c")
+            .arg(format!("/usr/bin/touch {}", marker.display()))
+            .output()
+            .await
+            .unwrap();
+
+        assert!(!output.status.success());
+        assert!(!marker.exists());
+    }
+
+    #[test]
+    fn codex_is_ephemeral_and_every_host_tool_is_disabled() {
+        let restrictions = tool_restrictions("codex");
+        for required in [
+            "--ephemeral",
+            "--ignore-user-config",
+            "--ignore-rules",
+            "--strict-config",
+        ] {
+            assert!(restrictions.iter().any(|value| value == required));
+        }
+        for feature in [
+            "apps",
+            "browser_use",
+            "computer_use",
+            "hooks",
+            "multi_agent",
+            "plugins",
+            "shell_tool",
+            "unified_exec",
+            "workspace_dependencies",
+        ] {
+            assert!(restrictions
+                .windows(2)
+                .any(|pair| pair == ["--disable", feature]));
+        }
+        assert!(restrictions
+            .windows(2)
+            .any(|pair| pair == ["-c", "approval_policy=\"never\""]));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn codex_cannot_see_its_real_home_or_execute_children() {
+        let home = real_path(&home_directory());
+        let executable = Path::new("/Applications/ChatGPT.app/Contents/Resources/codex");
+        let scratch = Path::new("/tmp/kuali-summary-test");
+        let text = profile("codex", executable, OsStr::new("/usr/bin:/bin"), scratch);
+        let codex_home = real_path(&codex_home_directory());
+
+        assert!(text.contains("(deny process-exec)"), "{text}");
+        assert!(text.contains(&format!(
+            "(allow process-exec (literal {}))",
+            quote(executable)
+        )));
+        assert!(!text.contains(&format!(
+            "(allow file-read* file-write* (subpath {}))",
+            quote(&codex_home)
+        )));
+        assert!(!text.contains(&format!(
+            "(allow file-read* (literal {}))",
+            quote(&codex_home.join("auth.json"))
+        )));
+        assert!(!text.contains("Library/Keychains"), "{text}");
+        assert!(!text.contains("Library/Caches"), "{text}");
+        assert!(text.contains(&format!(
+            "(allow file-read* file-write* (subpath {}))",
+            quote(scratch)
+        )));
+        assert!(text.contains(&format!("(deny file-read* (subpath {}))", quote(&home))));
     }
 }

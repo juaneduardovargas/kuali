@@ -33,13 +33,13 @@ impl ResolvedCommand {
 
     /// The same command under a kernel sandbox, or an error when this platform
     /// has none to offer.
-    fn confined(&self) -> Result<(Command, confine::Guard), LlmError> {
-        confine::launch(&self.name, &self.executable, &self.search_path).map_err(|message| {
-            LlmError::Provider {
+    pub(crate) fn confined(&self, scratch: &Path) -> Result<(Command, confine::Guard), LlmError> {
+        confine::launch(&self.name, &self.executable, &self.search_path, scratch).map_err(
+            |message| LlmError::Provider {
                 provider: self.name.clone(),
                 message,
-            }
-        })
+            },
+        )
     }
 
     pub(crate) fn label(&self) -> String {
@@ -193,16 +193,14 @@ async fn run(
     program: &ResolvedCommand,
     args: &[String],
     stdin_text: &str,
+    sandbox: &confine::SummarySandbox,
 ) -> Result<String, LlmError> {
-    // Launch from a neutral directory so tools that discover CLAUDE.md, Git, or
-    // project configuration cannot inherit unrelated user-project context.
-    let cwd = std::env::temp_dir();
-
     // The profile has to outlive the process that is running under it.
-    let (mut command, _profile) = program.confined()?;
+    let (mut command, _profile) = program.confined(sandbox.path())?;
+    sandbox.apply(&mut command);
     let mut child = command
         .args(args)
-        .current_dir(cwd)
+        .current_dir(sandbox.path())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -305,7 +303,12 @@ impl LlmProvider for ClaudeCliProvider {
 
         let command =
             resolve_command("claude").ok_or_else(|| LlmError::Unavailable("claude-cli".into()))?;
-        let stdout = run(&command, &args, &request.prompt).await?;
+        let sandbox =
+            confine::SummarySandbox::new("claude").map_err(|message| LlmError::Provider {
+                provider: "claude-cli".into(),
+                message,
+            })?;
+        let stdout = run(&command, &args, &request.prompt, &sandbox).await?;
 
         // `--output-format json` places text in `result`. Fall back to raw stdout
         // if the wrapper changes.
@@ -374,10 +377,17 @@ impl LlmProvider for CodexCliProvider {
     async fn complete(&self, request: &CompletionRequest) -> Result<String, LlmError> {
         let command =
             resolve_command("codex").ok_or_else(|| LlmError::Unavailable("codex-cli".into()))?;
+        let sandbox =
+            confine::SummarySandbox::new("codex").map_err(|message| LlmError::Provider {
+                provider: "codex-cli".into(),
+                message,
+            })?;
         // Unique temporary names support concurrent summaries.
         let stamp = uuid::Uuid::new_v4();
-        let answer_path = std::env::temp_dir().join(format!("kuali-codex-{stamp}.txt"));
-        let schema_path = std::env::temp_dir().join(format!("kuali-codex-{stamp}.schema.json"));
+        let answer_path = sandbox.path().join(format!("kuali-codex-{stamp}.txt"));
+        let schema_path = sandbox
+            .path()
+            .join(format!("kuali-codex-{stamp}.schema.json"));
 
         let mut args = vec![
             "exec".to_string(),
@@ -410,7 +420,7 @@ impl LlmProvider for CodexCliProvider {
 
         // Codex exposes no separate system prompt, so prepend it to the request.
         let prompt = format!("{}\n\n---\n\n{}", request.system, request.prompt);
-        let stdout = run(&command, &args, &prompt).await;
+        let stdout = run(&command, &args, &prompt, &sandbox).await;
 
         let answer = std::fs::read_to_string(&answer_path).ok();
         let _ = std::fs::remove_file(&answer_path);
@@ -473,7 +483,12 @@ impl LlmProvider for GeminiCliProvider {
         let prompt = format!("{}\n\n---\n\n{}", request.system, request.prompt);
         let command =
             resolve_command("gemini").ok_or_else(|| LlmError::Unavailable("gemini-cli".into()))?;
-        run(&command, &args, &prompt).await
+        let sandbox =
+            confine::SummarySandbox::new("gemini").map_err(|message| LlmError::Provider {
+                provider: "gemini-cli".into(),
+                message,
+            })?;
+        run(&command, &args, &prompt, &sandbox).await
     }
 }
 
@@ -488,7 +503,8 @@ mod tests {
     async fn a_cli_kuali_cannot_confine_is_refused_before_it_runs() {
         let shell = if cfg!(windows) { "cmd" } else { "sh" };
         let command = resolve_command(shell).unwrap();
-        let error = run(&command, &[], "hola").await.unwrap_err();
+        let sandbox = confine::SummarySandbox::new(shell).unwrap();
+        let error = run(&command, &[], "hola", &sandbox).await.unwrap_err();
         assert!(
             error.to_string().contains(shell),
             "se ejecutó una CLI sin confinar: {error}"
@@ -511,6 +527,30 @@ mod tests {
             .await
             .unwrap();
         assert!(answer.to_lowercase().contains("listo"), "{answer}");
+    }
+
+    /// Manual smoke test for the authenticated Codex installation. Its value is
+    /// not the wording of the answer but proving that authentication and output
+    /// still work after removing every host tool and child-process capability.
+    #[tokio::test]
+    #[ignore = "requiere una sesión de Codex iniciada"]
+    async fn a_tool_free_confined_codex_still_answers() {
+        let provider = CodexCliProvider::new(None);
+        let answer = provider
+            .complete(&CompletionRequest {
+                system: "Devuelve solamente un objeto JSON válido.".into(),
+                prompt: "Devuelve exactamente {\"estado\":\"aislado\"}.".into(),
+                json_schema: Some(serde_json::json!({
+                    "type": "object",
+                    "properties": { "estado": { "type": "string" } },
+                    "required": ["estado"],
+                    "additionalProperties": false
+                })),
+                max_tokens: 64,
+            })
+            .await
+            .unwrap();
+        assert!(answer.contains("aislado"), "{answer}");
     }
 
     #[test]

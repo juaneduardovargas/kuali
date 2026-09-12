@@ -9,6 +9,7 @@ use kuali_core::LlmConfig;
 
 use crate::catalog::{self, ProviderDescriptor};
 use crate::cli::ResolvedCommand;
+use crate::confine;
 use crate::provider::LlmError;
 
 /// Model as published by its provider.
@@ -109,10 +110,16 @@ async fn codex_cli(descriptor: &ProviderDescriptor) -> Result<Vec<ModelChoice>, 
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
     let command = require_binary(descriptor)?;
-    let mut process = command.process();
+    let sandbox = confine::SummarySandbox::new("codex").map_err(|message| LlmError::Provider {
+        provider: descriptor.id.to_string(),
+        message,
+    })?;
+    let (mut process, _profile) = command.confined(sandbox.path())?;
+    sandbox.apply(&mut process);
     let mut child = process
         .arg("app-server")
-        .current_dir(std::env::temp_dir())
+        .args(confine::codex_service_restrictions())
+        .current_dir(sandbox.path())
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::null())
@@ -485,6 +492,14 @@ fn entries(value: &serde_json::Value) -> impl Iterator<Item = &serde_json::Value
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    #[ignore = "requiere una sesión de Codex iniciada"]
+    async fn the_confined_codex_catalog_still_lists_models() {
+        let descriptor = catalog::descriptor("codex-cli").unwrap();
+        let models = codex_cli(descriptor).await.unwrap();
+        assert!(!models.is_empty());
+    }
 
     #[test]
     fn embeddings_and_audio_models_are_not_offered_for_summaries() {
