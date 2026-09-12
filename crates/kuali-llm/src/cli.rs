@@ -51,29 +51,55 @@ impl ResolvedCommand {
 /// and Node version managers. Finder and the Dock provide only a minimal PATH.
 pub(crate) fn resolve_command(program: &str) -> Option<ResolvedCommand> {
     let home = directories::BaseDirs::new().map(|dirs| dirs.home_dir().to_path_buf());
-    resolve_from(
-        program,
-        std::env::var_os("PATH").as_deref(),
-        home.as_deref(),
-    )
+    let inherited_path = std::env::var_os("PATH");
+    let directories = search_directories(inherited_path.as_deref(), home.as_deref());
+    resolve_from_directories(program, directories, preferred_macos_codex(program))
 }
 
+#[cfg(test)]
 fn resolve_from(
     program: &str,
     inherited_path: Option<&OsStr>,
     home: Option<&Path>,
 ) -> Option<ResolvedCommand> {
     let directories = search_directories(inherited_path, home);
-    let executable = directories
-        .iter()
-        .flat_map(|directory| executable_candidates(directory, program))
-        .find(|candidate| is_executable(candidate))?;
+    resolve_from_directories(program, directories, None)
+}
+
+fn resolve_from_directories(
+    program: &str,
+    directories: Vec<PathBuf>,
+    preferred: Option<PathBuf>,
+) -> Option<ResolvedCommand> {
+    let executable = preferred
+        .filter(|candidate| is_executable(candidate))
+        .or_else(|| {
+            directories
+                .iter()
+                .flat_map(|directory| executable_candidates(directory, program))
+                .find(|candidate| is_executable(candidate))
+        })?;
     let search_path = std::env::join_paths(&directories).ok()?;
     Some(ResolvedCommand {
         name: program.to_string(),
         executable,
         search_path,
     })
+}
+
+/// The ChatGPT desktop app ships a signed, native Codex executable. Prefer it
+/// over npm launchers: those are JavaScript wrappers that must execute Node and
+/// then a child binary, which conflicts with the summary sandbox's deliberate
+/// ban on child processes.
+#[cfg(target_os = "macos")]
+fn preferred_macos_codex(program: &str) -> Option<PathBuf> {
+    (program == "codex")
+        .then(|| PathBuf::from("/Applications/ChatGPT.app/Contents/Resources/codex"))
+}
+
+#[cfg(not(target_os = "macos"))]
+fn preferred_macos_codex(_program: &str) -> Option<PathBuf> {
+    None
 }
 
 fn search_directories(inherited_path: Option<&OsStr>, home: Option<&Path>) -> Vec<PathBuf> {
@@ -571,6 +597,25 @@ mod tests {
     #[test]
     fn a_binary_that_always_exists_is_found() {
         assert!(resolve_command(if cfg!(windows) { "cmd" } else { "sh" }).is_some());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_preferred_native_codex_beats_a_node_launcher() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let root = tempfile::tempdir().unwrap();
+        let bin = root.path().join("bin");
+        let launcher = bin.join("codex");
+        let native = root.path().join("native-codex");
+        std::fs::create_dir_all(&bin).unwrap();
+        for command in [&launcher, &native] {
+            std::fs::write(command, "#!/bin/sh\n").unwrap();
+            std::fs::set_permissions(command, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+
+        let resolved = resolve_from_directories("codex", vec![bin], Some(native.clone())).unwrap();
+        assert_eq!(resolved.executable, native);
     }
 
     #[cfg(unix)]
