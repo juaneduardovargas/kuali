@@ -775,6 +775,116 @@ test("Teams falls back to the observed hardware track instead of a silent synthe
   assert(microphoneProcessor, "the physical microphone fallback must be captured");
 });
 
+test("Meet replaces a raw observed microphone with an isolated echo-cancelled stream", async () => {
+  const harness = createHarness({
+    withPeerConnection: true,
+    topLevel: true,
+    hostname: "meet.google.com",
+  });
+  const pageStream = await harness.requestPageMicrophone({
+    audio: {
+      deviceId: { exact: "c920-device" },
+      echoCancellation: { exact: false },
+      noiseSuppression: { exact: false },
+      autoGainControl: { exact: false },
+      channelCount: 1,
+    },
+    video: false,
+  });
+  pageStream.getAudioTracks()[0].label = "HD Pro Webcam C920";
+
+  const peer = new harness.window.RTCPeerConnection();
+  const sender = new harness.FakeTrack("meet-processed-sender");
+  sender.label = "HD Pro Webcam C920";
+  sender.settings = {
+    deviceId: "c920-device",
+    echoCancellation: true,
+    noiseSuppression: true,
+    autoGainControl: true,
+    sampleRate: 48_000,
+    channelCount: 1,
+  };
+  sender.constraints = {
+    deviceId: { exact: "c920-device" },
+    echoCancellation: true,
+    noiseSuppression: true,
+    autoGainControl: true,
+  };
+  peer.senders = [{
+    track: sender,
+    getParameters: () => ({ encodings: [{ active: true }] }),
+  }];
+
+  await harness.controlAndWait("start");
+  assert.equal(harness.microphoneRequestCount, 2);
+  assert.equal(harness.microphoneConstraints[1].audio.deviceId.exact, "c920-device");
+  assert.equal(harness.microphoneConstraints[1].audio.echoCancellation.exact, "all");
+  const sourceEvent = harness.posts.find((message) => message.type === "meeting-event"
+    && message.kind === "microphone-source");
+  assert.equal(sourceEvent?.detail?.source, "selected-device-processed");
+  assert.equal(sourceEvent?.detail?.requestProfile, "aec-all");
+  assert.equal(sourceEvent?.detail?.deviceSelection, "sender");
+  assert.equal(sourceEvent?.detail?.observedPageTrack?.echoCancellation, false);
+  assert.equal(sourceEvent?.detail?.senderTrack?.echoCancellation, true);
+  assert.equal(sourceEvent?.detail?.capturedTrack?.echoCancellation, "all");
+});
+
+test("Meet falls back to its processed sender instead of the raw observed page track", async () => {
+  const harness = createHarness({
+    withPeerConnection: true,
+    topLevel: true,
+    hostname: "meet.google.com",
+    rejectProcessedMicrophone: true,
+  });
+  const pageStream = await harness.requestPageMicrophone({
+    audio: { deviceId: { exact: "c920-device" } },
+    video: false,
+  });
+  const pageTrack = pageStream.getAudioTracks()[0];
+  pageTrack.settings.echoCancellation = false;
+  pageTrack.settings.noiseSuppression = false;
+  pageTrack.settings.autoGainControl = false;
+
+  const peer = new harness.window.RTCPeerConnection();
+  const sender = new harness.FakeTrack("meet-processed-sender");
+  sender.label = "HD Pro Webcam C920";
+  sender.settings = {
+    deviceId: "c920-device",
+    echoCancellation: true,
+    noiseSuppression: true,
+    autoGainControl: true,
+    sampleRate: 48_000,
+    channelCount: 1,
+  };
+  sender.constraints = {
+    deviceId: { exact: "c920-device" },
+    echoCancellation: true,
+    noiseSuppression: true,
+    autoGainControl: true,
+  };
+  peer.senders = [{
+    track: sender,
+    getParameters: () => ({ encodings: [{ active: true }] }),
+  }];
+
+  await harness.controlAndWait("start");
+  assert.equal(harness.microphoneRequestCount, 4);
+  const sourceEvent = harness.posts.find((message) => message.type === "meeting-event"
+    && message.kind === "microphone-source");
+  assert.equal(sourceEvent?.detail?.source, "sender-track-unprocessed-fallback");
+  assert.equal(sourceEvent?.detail?.deviceSelection, "sender");
+  assert.equal(sourceEvent?.detail?.capturedTrack?.echoCancellation, true);
+  assert.equal(sourceEvent?.detail?.observedPageTrack?.echoCancellation, false);
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(sourceEvent?.detail?.attemptFailures.map(({ profile }) => profile))),
+    ["aec-all", "aec-browser", "aec-preferred"],
+  );
+  const microphoneProcessor = harness.trackProcessors.find(
+    (processor) => processor.track.id === `${sender.id}-clone`,
+  );
+  assert(microphoneProcessor, "Meet's processed sender fallback must be captured");
+});
+
 async function prepareRoutedMeetReceiver(harness, trackId = "routed-remote-audio") {
   const peer = new harness.window.RTCPeerConnection();
   const channel = harness.createCollectionChannel();

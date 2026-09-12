@@ -66,7 +66,9 @@ la RAM. Para una prueba rápida de una sola persona usa
 - La identidad viene de la colección interna de participantes cuando está
   disponible. Como respaldo, Kuali relaciona una sola vez el CSRC con una ficha
   tras varios cientos de milisegundos de voz decodificada inequívoca; el audio
-  posterior nunca persigue el brillo visual.
+  posterior nunca persigue el brillo visual. El micrófono local usa el
+  dispositivo elegido por el sender de Meet con cancelación de eco aislada del
+  sistema o del navegador, nunca una pista auxiliar cruda de la página.
 - Teams (experimental) usa pistas WebRTC individuales cuando la web las expone.
   Para el participante local, Kuali abre únicamente el micrófono seleccionado
   por Teams con cancelación de eco del sistema o del navegador, en lugar de

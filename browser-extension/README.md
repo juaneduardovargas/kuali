@@ -74,7 +74,9 @@ platform, and an `audioKind` of either `separate` or `mixed`.
   source (CSRC). Meet's three virtual transport lanes may change owners, while
   Kuali's participant channels remain stable. Identity comes from Meet's
   participant collection when available or from a one-time, confidence-gated
-  CSRC/activity correlation; later audio never follows the visual glow.
+  CSRC/activity correlation; later audio never follows the visual glow. The
+  local microphone uses Meet's sender-selected device with isolated system or
+  browser echo cancellation, never an auxiliary raw page track.
 - Teams (experimental): captures individual WebRTC tracks when Teams exposes
   them and maps voice-outline activity to the corresponding participant. For
   the local participant, Kuali opens only the microphone selected by Teams with

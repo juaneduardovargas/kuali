@@ -2149,9 +2149,9 @@
   }
 
   async function openLocalMicrophone(meetSenderTrack, pageMicrophone = null) {
-    // Use Teams' chosen hardware only as a device selector. Its page track may
-    // intentionally disable AEC/NS/AGC for Teams' own downstream processing;
-    // cloning that raw track makes loudspeaker playback look like local speech.
+    // Use the meeting platform's track only to select the physical device.
+    // Meet and Teams can expose auxiliary raw tracks with AEC/NS/AGC disabled;
+    // cloning one makes loudspeaker playback look like local speech.
     const pageTrack = pageMicrophone?.track || null;
     const senderDeviceId = clean(meetSenderTrack?.getSettings?.().deviceId);
     const pageDeviceId = clean(pageTrack?.getSettings?.().deviceId);
@@ -2165,7 +2165,8 @@
       ? "page"
       : (senderDeviceId ? "sender" : (pageDeviceId ? "page" : "default"));
 
-    if (platform === "microsoft_teams") {
+    const needsIsolatedProcessing = ["google_meet", "microsoft_teams"].includes(platform);
+    if (needsIsolatedProcessing) {
       let lastError = null;
       const attemptFailures = [];
       for (const attempt of processedMicrophoneAttempts(deviceId)) {
@@ -2189,25 +2190,31 @@
           });
         }
       }
-      // A getUserMedia observation is a real hardware capture. Prefer it over
-      // Teams' RTP sender, which can be a silent WebAudio destination track.
-      const fallbackTrack = pageTrack || meetSenderTrack;
+      // Teams' RTP sender can be a silent WebAudio destination, whereas Meet's
+      // sender is the processed microphone sent to the call. Preserve that
+      // platform-specific ordering if opening a dedicated AEC stream fails.
+      const fallbackTrack = platform === "microsoft_teams"
+        ? (pageTrack || meetSenderTrack)
+        : (meetSenderTrack || pageTrack);
+      const fallbackIsPageTrack = fallbackTrack === pageTrack;
       if (fallbackTrack && typeof fallbackTrack.clone === "function") {
         return {
           stream: new MediaStream([fallbackTrack.clone()]),
-          source: pageTrack ? "page-track-unprocessed-fallback" : "sender-track-unprocessed-fallback",
+          source: fallbackIsPageTrack
+            ? "page-track-unprocessed-fallback"
+            : "sender-track-unprocessed-fallback",
           requestProfile: "unprocessed-fallback",
-          requestedAudio: pageMicrophone?.audioConstraints || null,
+          requestedAudio: fallbackIsPageTrack
+            ? (pageMicrophone?.audioConstraints || null)
+            : (meetSenderTrack?.getConstraints?.() || null),
           deviceSelection,
           attemptFailures,
         };
       }
-      throw lastError || new Error("Teams microphone device is unavailable");
+      throw lastError || new Error("The meeting microphone device is unavailable");
     }
 
-    // Meet uses the sender track to identify its selected physical device. A
-    // fresh stream remains the compatibility fallback when no shared track can
-    // be cloned by startMic().
+    // Other platforms retain the simple selected-device capture path.
     if (deviceId) {
       try {
         const constraints = { deviceId: { exact: deviceId } };
@@ -2335,7 +2342,8 @@
       let requestedAudio = null;
       let deviceSelection = null;
       let microphoneAttemptFailures = [];
-      if (platform !== "microsoft_teams" && sharedTrack && typeof sharedTrack.clone === "function") {
+      const needsIsolatedProcessing = ["google_meet", "microsoft_teams"].includes(platform);
+      if (!needsIsolatedProcessing && sharedTrack && typeof sharedTrack.clone === "function") {
         nextMicStream = new MediaStream([sharedTrack.clone()]);
         microphoneSource = pageTrack ? "page-microphone-clone" : "sender-track-clone";
         microphoneProfile = "shared-track-clone";
