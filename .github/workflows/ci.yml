@@ -82,15 +82,10 @@ jobs:
       # so this produces the disk image and throws it away: what it proves is
       # that packaging still works, on the commit that broke it rather than
       # weeks later when someone cuts a release.
-      #
-      # Updater artifacts are switched off because signing them needs the
-      # release key, which a pull request from a fork cannot reach. Every real
-      # release signs them, so nothing here goes unchecked. The config path is
-      # resolved from the repository root, not from `src-tauri`.
       - name: Build the bundle without publishing it
         uses: tauri-apps/tauri-action@84b9d35b5fc46c1e45415bdb6144030364f7ebc5 # v0
         with:
-          args: --target aarch64-apple-darwin --config src-tauri/tauri.ci.conf.json
+          args: --target aarch64-apple-darwin
 
   interface:
     name: Desktop interface

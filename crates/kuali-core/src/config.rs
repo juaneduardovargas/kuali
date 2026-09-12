@@ -32,9 +32,6 @@ pub struct ApplicationConfig {
     /// the interface to that language without changing transcription or
     /// summary languages.
     pub language: String,
-    /// Install signed updates whenever no recording or summary is in progress.
-    /// Kuali checks the release feed at startup regardless of this preference.
-    pub automatic_updates: bool,
     /// Names this person answers to in meetings, so a question phrased in the
     /// first person can be resolved.
     ///
@@ -51,7 +48,6 @@ impl Default for ApplicationConfig {
     fn default() -> Self {
         Self {
             language: "auto".into(),
-            automatic_updates: true,
             display_names: Vec::new(),
         }
     }
@@ -746,7 +742,6 @@ mod tests {
     fn default_config_reports_what_is_missing() {
         let cfg = KualiConfig::default();
         assert_eq!(cfg.application.language, "auto");
-        assert!(cfg.application.automatic_updates);
         assert!(!cfg.llm.summarize_on_leave);
         assert_eq!(cfg.whisper.model, WhisperModel::LargeV3TurboQ5);
         assert!(!cfg.is_ready());
@@ -783,17 +778,14 @@ mod tests {
     fn application_preferences_round_trip_and_old_configs_use_safe_defaults() {
         let mut cfg = KualiConfig::default();
         cfg.application.language = "en".into();
-        cfg.application.automatic_updates = false;
         let saved = toml_round_trip(&cfg);
         assert_eq!(saved.application.language, "en");
-        assert!(!saved.application.automatic_updates);
 
         let old: KualiConfig = serde_json::from_value(serde_json::json!({
             "discord": { "bot-token": "token" }
         }))
         .expect("deserialize config written before UI languages existed");
         assert_eq!(old.application.language, "auto");
-        assert!(old.application.automatic_updates);
         assert!(!old.llm.summarize_on_leave);
         assert!(old.meet.pairing_token.is_empty());
     }

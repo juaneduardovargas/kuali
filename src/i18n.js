@@ -601,14 +601,6 @@ export const ENGLISH_TRANSLATIONS = Object.freeze({
   "Abrir Kuali al iniciar sesión en este Mac": "Open Kuali when you sign in to this Mac",
   "El receptor de la extensión y el seguimiento de Discord quedarán listos automáticamente.":
     "The extension receiver and Discord following will be ready automatically.",
-  "Actualizar Kuali automáticamente": "Update Kuali automatically",
-  "Instala las versiones firmadas cuando no hay reuniones ni resúmenes en curso.":
-    "Installs signed releases when no meetings or summaries are in progress.",
-  Actualizaciones: "Updates",
-  "Kuali busca actualizaciones al iniciar y periódicamente.":
-    "Kuali checks for updates at startup and periodically.",
-  "Buscar ahora": "Check now",
-  "Actualizar y reiniciar": "Update and restart",
   "¿Necesitas volver a configurar algo?": "Need to configure something again?",
   "La guía de Discord y Meet siempre está disponible desde Inicio.":
     "The Discord and Meet guide is always available from Home.",
@@ -723,24 +715,6 @@ export const ENGLISH_TRANSLATIONS = Object.freeze({
   "Guardando y moviendo pesos…": "Saving and moving weights…",
   Guardado: "Saved",
   "No se pudo guardar": "Could not save",
-  "Buscando actualizaciones…": "Checking for updates…",
-  "Kuali {version} está disponible.": "Kuali {version} is available.",
-  "Tienes la versión más reciente.": "You have the latest version.",
-  "No se pudo buscar actualizaciones.": "Could not check for updates.",
-  "Descargando Kuali {version}…": "Downloading Kuali {version}…",
-  "Descargando Kuali {version}: {progress}": "Downloading Kuali {version}: {progress}",
-  "La actualización se instalará cuando termine la actividad actual.":
-    "The update will install when the current activity finishes.",
-  "Actualización lista. Kuali esperará a que termine la actividad actual.":
-    "Update ready. Kuali will wait for the current activity to finish.",
-  "Esperando a que termine la actividad…": "Waiting for current activity to finish…",
-  "Hay una actualización de Kuali": "A Kuali update is available",
-  "Versión {version} lista para instalar.": "Version {version} is ready to install.",
-  "Termina la reunión o el resumen antes de reiniciar Kuali.":
-    "Finish the meeting or summary before restarting Kuali.",
-  "No hay una actualización pendiente.": "There is no pending update.",
-  "Actualización instalada; reiniciando…": "Update installed; restarting…",
-  "No se pudo instalar la actualización.": "Could not install the update.",
   "Activando seguimiento de Discord…": "Enabling Discord following…",
   "Pausando seguimiento de Discord…": "Pausing Discord following…",
   "Kuali volverá a seguirte cuando entres a una llamada":

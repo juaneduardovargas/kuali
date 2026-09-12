@@ -168,7 +168,6 @@ fn main() {
             MacosLauncher::LaunchAgent,
             Some(vec!["--hidden"]),
         ))
-        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(engine.clone())
         .setup(move |app| {
             // Built hidden and positioned on demand: a menu-bar panel has no
@@ -333,8 +332,6 @@ fn main() {
             commands::open_browser_extensions,
             commands::autostart_enabled,
             commands::set_autostart_enabled,
-            commands::check_for_update,
-            commands::install_update,
             commands::factory_reset,
             commands::take_factory_reset_completed,
         ])

@@ -103,39 +103,31 @@ test("meeting index states are translated without technical passage counts", () 
   setLanguagePreference("es", { notify: false });
 });
 
-test("signed updates are checked at startup and deferred during active work", () => {
+test("the upstream updater is absent from this build", () => {
   const html = readFileSync(new URL("./index.html", import.meta.url), "utf8");
   const app = readFileSync(new URL("./app.js", import.meta.url), "utf8");
   const commands = readFileSync(new URL("../src-tauri/src/commands.rs", import.meta.url), "utf8");
+  const main = readFileSync(new URL("../src-tauri/src/main.rs", import.meta.url), "utf8");
+  const cargo = readFileSync(
+    new URL("../src-tauri/Cargo.toml", import.meta.url),
+    "utf8",
+  );
   const tauriConfig = JSON.parse(
     readFileSync(new URL("../src-tauri/tauri.conf.json", import.meta.url), "utf8"),
   );
-  assert.match(html, /id="cfg-automatic-updates"/);
-  assert.match(html, /id="cfg-automatic-updates"[^>]*checked/);
-  assert.match(html, /id="btn-check-update"/);
-  assert.match(html, /id="btn-install-update"/);
+
+  for (const id of ["cfg-automatic-updates", "btn-check-update", "btn-install-update"]) {
+    assert.doesNotMatch(html, new RegExp(`id="${id}"`));
+  }
   assert.match(html, /id="app-version"/);
   assert.match(app, /invoke\("app_version"\)/);
-  assert.match(app, /UPDATE_CHECK_INTERVAL_MS = 6 \* 60 \* 60 \* 1000/);
-  assert.match(app, /scheduleUpdateChecks\(\);\s+void checkForUpdates\(\);/);
-  assert.doesNotMatch(app, /UPDATE_BOOT_DELAY_MS|updateBootTimer/);
-  assert.match(
-    app,
-    /function maybeInstallUpdateAutomatically\(\)[\s\S]*?\["automatic-updates"\] === false/,
-  );
-  assert.doesNotMatch(
-    app,
-    /function scheduleUpdateChecks\(\)[\s\S]*?\["automatic-updates"\] === false/,
-  );
-  assert.match(app, /state\.liveMeetings\.size === 0/);
-  assert.match(commands, /if !engine\.safe_for_update\(\)/);
-  assert.match(commands, /while !engine\.safe_for_update\(\)/);
-  assert.match(commands, /kuali:\/\/update-waiting/);
-  assert.equal(tauriConfig.bundle.createUpdaterArtifacts, true);
-  assert.match(tauriConfig.plugins.updater.pubkey, /^[A-Za-z0-9+/=]+$/);
-  assert.deepEqual(tauriConfig.plugins.updater.endpoints, [
-    "https://github.com/igarrux/kuali/releases/latest/download/latest.json",
-  ]);
+  assert.doesNotMatch(app, /checkForUpdates|installAvailableUpdate|check_for_update|install_update/);
+  assert.doesNotMatch(commands, /check_for_update|install_update|UpdaterExt/);
+  assert.doesNotMatch(main, /tauri_plugin_updater|commands::check_for_update|commands::install_update/);
+  assert.doesNotMatch(cargo, /tauri-plugin-updater/);
+  assert.equal(tauriConfig.bundle.createUpdaterArtifacts, undefined);
+  assert.equal(tauriConfig.plugins?.updater, undefined);
+  assert.doesNotMatch(JSON.stringify(tauriConfig), /igarrux\/kuali\/releases/);
 });
 
 test("connected Discord settings stay protected until the user chooses to edit", () => {
