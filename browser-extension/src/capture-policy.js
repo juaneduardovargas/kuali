@@ -497,6 +497,29 @@
     return controlMuted !== true;
   }
 
+  /**
+   * Meet replaces controls and roster nodes during layout changes. Require all
+   * independent call signals to remain absent for a bounded interval before a
+   * caller may treat the meeting as left.
+   */
+  function stableMeetCallPresence(
+    previous,
+    { controlsPresent, protocolBacked, now, stabilityMs = 5_000 },
+  ) {
+    const evidenceSeen = previous?.evidenceSeen === true || controlsPresent || protocolBacked;
+    let missingSince = Number.isFinite(previous?.missingSince) ? previous.missingSince : null;
+    if (controlsPresent || protocolBacked) {
+      missingSince = null;
+    } else if (evidenceSeen && missingSince == null) {
+      missingSince = now;
+    }
+    const inCall = !evidenceSeen
+      || controlsPresent
+      || protocolBacked
+      || now - missingSince < stabilityMs;
+    return { evidenceSeen, missingSince, inCall };
+  }
+
   globalThis.KualiCapturePolicy = Object.freeze({
     MIC_CHANNEL,
     shouldCorrelateIdentity,
@@ -521,5 +544,6 @@
     meetMicrophoneMuted,
     shouldSendMeetMicrophone,
     shouldSendTeamsMicrophone,
+    stableMeetCallPresence,
   });
 })();

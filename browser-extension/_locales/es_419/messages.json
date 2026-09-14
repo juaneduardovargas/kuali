@@ -53,6 +53,7 @@
   "mixedCaptureError": { "message": "No pude capturar el audio mezclado: $ERROR$", "placeholders": { "error": { "content": "$1" } } },
   "unsupportedMeetingError": { "message": "Esta pestaña no es una reunión compatible." },
   "mixedCaptureDeniedError": { "message": "Chrome no permitió preparar la captura mezclada. Vuelve a intentarlo desde esta pestaña." },
+  "audioOnlyCaptureWarning": { "message": "Grabando y transcribiendo solo audio; el video de la pestaña no está disponible. Chrome: $ERROR$", "placeholders": { "error": { "content": "$1" } } },
   "screenChunkTooLargeError": { "message": "Un fragmento de la grabación de pantalla excedió el límite local de seguridad." },
   "captureRejectedError": { "message": "Kuali rechazó esta captura." },
   "missingPairingCodeError": { "message": "Ingresa el código de emparejamiento de 32 caracteres de los Ajustes de Kuali antes de grabar." },

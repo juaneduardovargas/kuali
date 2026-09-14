@@ -85,6 +85,27 @@ function render(state) {
     || (idle && !$("participant-consent").checked);
   $("error").hidden = !state?.error;
   $("error").textContent = state?.error || "";
+  $("warning").hidden = !state?.warning;
+  $("warning").textContent = state?.warning || "";
+}
+
+function prepareTabCapture(targetTabId) {
+  return new Promise((resolve) => {
+    try {
+      chrome.tabCapture.getMediaStreamId({ targetTabId }, (streamId) => {
+        const error = chrome.runtime.lastError?.message;
+        resolve({
+          tabStreamId: streamId || null,
+          tabCaptureError: error || (!streamId ? "Chrome did not return a tab stream identifier." : null),
+        });
+      });
+    } catch (error) {
+      resolve({
+        tabStreamId: null,
+        tabCaptureError: String(error?.message || error),
+      });
+    }
+  });
 }
 
 chrome.tabs.query({ active: true, currentWindow: true }).then(async ([tab]) => {
@@ -125,6 +146,10 @@ $("toggle").addEventListener("click", async () => {
     $("participant-consent").focus();
     return;
   }
+  // This call must happen directly in the click handler while Chrome still
+  // considers the extension invocation a user gesture. Storage and connection
+  // work can safely continue while Chrome prepares the one-time stream ID.
+  const tabCapture = starting ? prepareTabCapture(tabId) : null;
   if (starting) {
     // Persist before asking the service worker to connect. This avoids a race
     // when the user pastes the code and immediately presses Record.
@@ -134,10 +159,15 @@ $("toggle").addEventListener("click", async () => {
       kualiCaptureScreen: captureScreenPreference,
     });
   }
+  const preparedCapture = tabCapture ? await tabCapture : null;
   chrome.runtime.sendMessage({
     type: starting ? "capture-start" : "capture-stop",
     tabId,
-    ...(starting ? { options: { screen: $("record-video").checked } } : {}),
+    ...(starting ? {
+      options: { screen: $("record-video").checked },
+      tabStreamId: preparedCapture?.tabStreamId || null,
+      tabCaptureError: preparedCapture?.tabCaptureError || null,
+    } : { reason: "user" }),
   });
   if (starting) $("participant-consent").checked = false;
 });

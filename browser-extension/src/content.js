@@ -660,9 +660,3 @@ sendRuntimeMessage({
   type: "frame-ready",
   ...(window === window.top ? { ...meetingInfo(), title: document.title } : {}),
 });
-
-if (window === window.top) {
-  window.addEventListener("pagehide", () => {
-    sendRuntimeMessage({ type: "capture-stop" });
-  }, { once: true });
-}

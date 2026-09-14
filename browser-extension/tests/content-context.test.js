@@ -44,6 +44,8 @@ test("an invalidated extension context cannot escape the content-script bridge",
     window,
   });
 
+  assert.equal(listeners.has("pagehide"), false, "page lifecycle changes must not stop a meeting");
+
   invalidated = true;
   assert.doesNotThrow(() => listeners.get("message")({
     source: window,

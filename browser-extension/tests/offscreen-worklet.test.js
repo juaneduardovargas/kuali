@@ -108,6 +108,25 @@ test("offscreen mixed capture uses the PCM AudioWorklet", async () => {
     assert.equal(worklets[0].options.channelInterpretation, "speakers");
     assert.equal(typeof worklets[0].port.onmessage, "function");
 
+    const status = await new Promise((resolve) => {
+      assert.equal(runtimeListener({ type: "mixed-capture-status" }, {}, resolve), false);
+    });
+    assert.deepEqual(status, {
+      ok: true,
+      active: true,
+      tabId: 42,
+      recording: "inactive",
+    });
+
+    const wrongTabStop = await new Promise((resolve) => {
+      assert.equal(runtimeListener({ type: "mixed-capture-stop", tabId: 99 }, {}, resolve), false);
+    });
+    assert.deepEqual(wrongTabStop, {
+      ok: false,
+      stopped: false,
+      activeTabId: 42,
+    });
+
     worklets[0].port.onmessage({
       data: new Float32Array(2048).fill(0.1).buffer,
     });
@@ -118,9 +137,9 @@ test("offscreen mixed capture uses the PCM AudioWorklet", async () => {
     assert(Math.abs(mixedAudio.pcm[0] - 0.1) < 1e-6);
 
     const stopped = await new Promise((resolve) => {
-      assert.equal(runtimeListener({ type: "mixed-capture-stop" }, {}, resolve), true);
+      assert.equal(runtimeListener({ type: "mixed-capture-stop", tabId: 42 }, {}, resolve), true);
     });
-    assert.deepEqual(stopped, { ok: true });
+    assert.deepEqual(stopped, { ok: true, stopped: true, tabId: 42 });
 
     const source = readFileSync(new URL("../src/offscreen.js", import.meta.url), "utf8");
     assert.doesNotMatch(source, /createScriptProcessor|onaudioprocess/);

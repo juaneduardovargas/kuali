@@ -113,6 +113,7 @@
   let meetProtocolWarningSent = false;
   let meetOutputRevision = 0;
   let meetProtocolMicMuted = null;
+  let meetCallPresence = { evidenceSeen: false, missingSince: null, inCall: true };
   let meetMicAllowed = false;
   let meetMicCheckedAt = 0;
 
@@ -1288,13 +1289,20 @@
     }
     const detail = capturePolicy.rosterDetail(roster, platform);
     // `participants` may contain the local fallback above so the UI keeps a
-    // stable identity while Meet repaints. Preserve the raw DOM presence too:
-    // its persistent disappearance is how the extension knows the user hung up.
+    // stable identity while Meet repaints. A call is considered left only when
+    // both the controls and Meet's protocol-backed current user have remained
+    // absent. Roster disappearance alone is never an end-of-call signal.
     detail.selfPresentInDom = snapshot.domRoster.some(({ identity }) => identity.isSelf);
-    detail.inCall = platform !== "google_meet" || meetMicrophoneMutedFromControls() !== null;
     detail.protocolBacked = [...meetUsers.values()].some(
       (user) => user.status === 1 && user.isCurrentUser,
     );
+    const controlsPresent = meetMicrophoneMutedFromControls() !== null;
+    meetCallPresence = capturePolicy.stableMeetCallPresence(meetCallPresence, {
+      controlsPresent,
+      protocolBacked: detail.protocolBacked,
+      now: performance.now(),
+    });
+    detail.inCall = meetCallPresence.inCall;
     const fingerprint = JSON.stringify(detail);
     if (fingerprint === lastRosterFingerprint) return;
     lastRosterFingerprint = fingerprint;
@@ -2461,6 +2469,7 @@
       return;
     }
     running = true;
+    meetCallPresence = { evidenceSeen: false, missingSince: null, inCall: true };
     meetAnnouncedChannels.clear();
     sentIdentity.clear();
     meetPcmLeaseBySource.clear();
@@ -2516,6 +2525,7 @@
       meetingEvent("active-speakers", { platform, participants: [] });
     }
     localIdentity = null;
+    meetCallPresence = { evidenceSeen: false, missingSince: null, inCall: true };
     lastRosterFingerprint = "";
     lastMeetProbeAt = 0;
     lastActiveFingerprint = "";

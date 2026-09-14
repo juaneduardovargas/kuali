@@ -31,6 +31,13 @@ const DEFAULT_PORT = 9099;
 const HEALTH_TIMEOUT_MS = 900;
 const HEALTH_CACHE_MS = 3_000;
 const MEETING_END_GRACE_MS = 3_500;
+const STOP_REASONS = new Set([
+  "user",
+  "meeting-left",
+  "tab-closed",
+  "platform-navigation",
+  "restart",
+]);
 const sessions = new Map();
 let healthCache = {
   key: null,
@@ -52,6 +59,8 @@ function stateFor(tabId) {
       keepAlive: null,
       info: null,
       error: null,
+      warning: null,
+      stopPromise: null,
       frames: new Map([[0, 0]]),
       nextFrameSlot: 1,
       channels: new Map(),
@@ -85,7 +94,7 @@ function scheduleAutomaticStop(tabId, state) {
   state.meetingEndTimer = setTimeout(() => {
     state.meetingEndTimer = null;
     if (state.status === "capturing" && state.hadSelf && !state.selfPresent) {
-      stop(tabId);
+      stop(tabId, { reason: "meeting-left" });
     }
   }, MEETING_END_GRACE_MS);
 }
@@ -94,11 +103,28 @@ function needsMixedFallback(platform) {
   return ["google_meet", "zoom", "microsoft_teams"].includes(platform);
 }
 
+function sanitizeCaptureError(value) {
+  const detail = String(value || "")
+    .replace(/[\u0000-\u001f\u007f]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 300);
+  return detail || "Chrome did not return a tab stream identifier.";
+}
+
 function mintTabStream(tabId) {
   return new Promise((resolve) => {
-    chrome.tabCapture.getMediaStreamId({ targetTabId: tabId }, (streamId) => {
-      resolve(chrome.runtime.lastError ? null : streamId || null);
-    });
+    try {
+      chrome.tabCapture.getMediaStreamId({ targetTabId: tabId }, (streamId) => {
+        const error = chrome.runtime.lastError?.message;
+        resolve({
+          streamId: streamId || null,
+          error: error || (!streamId ? "Chrome did not return a tab stream identifier." : null),
+        });
+      });
+    } catch (error) {
+      resolve({ streamId: null, error: String(error?.message || error) });
+    }
   });
 }
 
@@ -118,9 +144,19 @@ async function ensureOffscreen() {
 
 async function startMixedFallback(tabId, state) {
   const streamId = state.fallbackStreamId;
-  if (!streamId) return;
+  if (!streamId) return { ok: false, error: "Chrome did not provide a tab stream identifier." };
   try {
     await ensureOffscreen();
+    const status = await chrome.runtime.sendMessage({ type: "mixed-capture-status" }).catch(() => null);
+    if (status?.active && status.tabId !== tabId) {
+      return {
+        ok: false,
+        error: `Another meeting tab (${status.tabId}) already owns the offscreen capture.`,
+      };
+    }
+    if (status?.active && status.tabId === tabId) {
+      await chrome.runtime.sendMessage({ type: "mixed-capture-stop", tabId }).catch(() => {});
+    }
     const result = await chrome.runtime.sendMessage({
       type: "mixed-capture-start",
       tabId,
@@ -129,27 +165,29 @@ async function startMixedFallback(tabId, state) {
     });
     if (result?.ok === false) throw new Error(result.error);
     if (state.status !== "capturing" || state.fallbackStreamId !== streamId) {
-      await chrome.runtime.sendMessage({ type: "mixed-capture-stop" }).catch(() => {});
-      return;
+      await chrome.runtime.sendMessage({ type: "mixed-capture-stop", tabId }).catch(() => {});
+      return { ok: false, error: "Capture was superseded while the tab stream was starting." };
     }
     state.fallbackActive = true;
     state.fallbackStartedAt = Date.now();
+    return { ok: true, error: null };
   } catch (error) {
-    const detail = String(error?.message || error);
-    state.error = translated("mixedCaptureError", `Could not capture mixed audio: ${detail}`, [detail]);
-    publish(tabId);
+    return { ok: false, error: String(error?.message || error) };
   }
 }
 
-async function stopMixedFallback(state) {
+async function stopMixedFallback(tabId, state) {
   clearTimeout(state.fallbackTimer);
   state.fallbackTimer = null;
   state.fallbackPending.length = 0;
-  state.fallbackStreamId = null;
   state.fallbackStartedAt = 0;
-  if (!state.fallbackActive) return;
+  const wasActive = state.fallbackActive;
   state.fallbackActive = false;
-  await chrome.runtime.sendMessage({ type: "mixed-capture-stop" }).catch(() => {});
+  const status = await chrome.runtime.sendMessage({ type: "mixed-capture-status" }).catch(() => null);
+  if ((status?.active && status.tabId === tabId) || (!status && wasActive)) {
+    await chrome.runtime.sendMessage({ type: "mixed-capture-stop", tabId }).catch(() => {});
+  }
+  state.fallbackStreamId = null;
 }
 
 function promoteMixedFallback(tabId, state) {
@@ -267,6 +305,8 @@ function publish(tabId) {
     tabId,
     status: state.status,
     error: state.error,
+    warning: state.warning,
+    capture: { ...state.capture },
     platform: state.info?.platform,
     participantCount: state.participantCount,
     connectedTracks: state.tracks.size,
@@ -283,6 +323,28 @@ function publish(tabId) {
       ? translated("recordingIndicator", "Kuali is recording and transcribing")
       : "Kuali",
   }).catch(() => {});
+}
+
+function sendDiagnostic(state, kind, detail) {
+  const socket = state.socket;
+  if (!socket || socket.readyState !== WebSocket.OPEN) return;
+  socket.send(encodeMeetingEvent({ kind, ts: Date.now(), detail }));
+}
+
+function markCaptureDegraded(tabId, state, error) {
+  const detail = sanitizeCaptureError(error);
+  state.capture.screen = false;
+  state.warning = translated(
+    "audioOnlyCaptureWarning",
+    `Recording and transcribing audio only; tab video is unavailable. Chrome: ${detail}`,
+    [detail],
+  );
+  sendDiagnostic(state, "capture-degraded", {
+    capability: "screen",
+    effective: false,
+    reason: detail,
+  });
+  publish(tabId);
 }
 
 async function connectionSettings() {
@@ -357,7 +419,7 @@ async function kualiAvailable() {
   return pending;
 }
 
-async function start(tabId, options = {}) {
+async function start(tabId, options = {}, preparedCapture = {}) {
   const state = stateFor(tabId);
   await recoverTabRegistration(tabId, state);
   if (!state.info) {
@@ -374,21 +436,28 @@ async function start(tabId, options = {}) {
     publish(tabId);
     return;
   }
-  await stop(tabId, false);
+  await stop(tabId, { notify: false, reason: "restart" });
   state.hadSelf = false;
   state.selfPresent = false;
   state.error = null;
+  state.warning = null;
   state.lastSeparateAudioAt = 0;
   state.capture = { audio: false, screen: false, diagnostics: false };
+  const requestedScreen = options?.screen === true;
+  let tabCaptureError = null;
   if (needsMixedFallback(state.info.platform)) {
-    // Request this while the popup click still carries user activation.
-    state.fallbackStreamId = await mintTabStream(tabId);
-    if (!state.fallbackStreamId) {
-      state.error = translated(
-        "mixedCaptureDeniedError",
-        "Chrome could not prepare mixed capture. Try again from this tab.",
-      );
-    }
+    const suppliedByPopup = Object.hasOwn(preparedCapture, "tabStreamId")
+      || Object.hasOwn(preparedCapture, "tabCaptureError");
+    const prepared = suppliedByPopup
+      ? {
+          streamId: typeof preparedCapture.tabStreamId === "string"
+            ? preparedCapture.tabStreamId.trim() || null
+            : null,
+          error: preparedCapture.tabCaptureError,
+        }
+      : await mintTabStream(tabId);
+    state.fallbackStreamId = prepared.streamId;
+    tabCaptureError = prepared.error ? sanitizeCaptureError(prepared.error) : null;
   }
   state.status = "connecting";
   publish(tabId);
@@ -401,7 +470,7 @@ async function start(tabId, options = {}) {
     pairing_token: pairingToken,
   });
   if (typeof options?.screen === "boolean") {
-    query.set("capture_screen", options.screen ? "1" : "0");
+    query.set("capture_screen", options.screen && state.fallbackStreamId ? "1" : "0");
   }
   const socket = new WebSocket(`ws://127.0.0.1:${wsPort}/ingest?${query}`);
   state.socket = socket;
@@ -427,11 +496,6 @@ async function start(tabId, options = {}) {
         screen: response.capture?.screen === true,
         diagnostics: response.capture?.diagnostics === true,
       };
-      socket.send(encodeMeetingEvent({
-        kind: "capture-options",
-        ts: Date.now(),
-        detail: state.capture,
-      }));
       state.status = "capturing";
       clearInterval(state.keepAlive);
       // Chrome 116+ preserves the service worker while its WebSocket exchanges
@@ -445,10 +509,27 @@ async function start(tabId, options = {}) {
           }));
         }
       }, 20_000);
-      publish(tabId);
       // Build the recording graph before page capture starts. This prevents the
       // first local-microphone buffer from racing ahead of the offscreen mixer.
-      if (needsMixedFallback(state.info.platform)) await startMixedFallback(tabId, state);
+      const fallback = needsMixedFallback(state.info.platform)
+        ? await startMixedFallback(tabId, state)
+        : { ok: true, error: null };
+      if (state.socket !== socket || state.status !== "capturing") return;
+      if (requestedScreen && (!state.fallbackStreamId || fallback.ok === false)) {
+        markCaptureDegraded(
+          tabId,
+          state,
+          tabCaptureError || fallback.error || "Chrome could not start tab video capture.",
+        );
+      } else if (!state.fallbackActive) {
+        state.capture.screen = false;
+      }
+      socket.send(encodeMeetingEvent({
+        kind: "capture-options",
+        ts: Date.now(),
+        detail: state.capture,
+      }));
+      publish(tabId);
       if (state.socket === socket && state.status === "capturing") {
         sendControl(tabId, state, "start");
       }
@@ -463,52 +544,57 @@ async function start(tabId, options = {}) {
   };
   socket.onclose = () => {
     if (state.socket !== socket) return;
+    // Reuse the serialized cleanup path so an immediate retry cannot race an
+    // offscreen shutdown left behind by the disconnected socket.
+    stop(tabId, { reason: "restart" }).catch(() => {});
+  };
+}
+
+async function stop(tabId, { notify = true, reason = "user" } = {}) {
+  const state = stateFor(tabId);
+  if (state.stopPromise) return state.stopPromise;
+  const normalizedReason = STOP_REASONS.has(reason) ? reason : "user";
+  const operation = (async () => {
+    const socket = state.socket;
+    const wasRunning = Boolean(socket)
+      || ["connecting", "waiting", "capturing"].includes(state.status)
+      || state.fallbackActive;
+    if (wasRunning) sendDiagnostic(state, "capture-stop", { reason: normalizedReason });
+    if (notify) sendControl(tabId, state, "stop");
+    // Keep the socket open until MediaRecorder has emitted and forwarded its
+    // final chunk. Otherwise the last second of a normal stop would be lost.
+    await stopMixedFallback(tabId, state);
     clearInterval(state.keepAlive);
     state.keepAlive = null;
     state.socket = null;
+    state.status = "idle";
     state.channels.clear();
     state.tracks.clear();
     state.participantCount = 0;
     state.participantCountsByFrame.clear();
     state.selfPresent = false;
     state.hadSelf = false;
+    state.warning = null;
+    state.capture = { audio: false, screen: false, diagnostics: false };
     cancelAutomaticStop(state);
-    stopMixedFallback(state);
-    if (state.status !== "idle") {
-      state.status = "idle";
-      sendControl(tabId, state, "stop");
-    }
+    state.fallbackPromoted = false;
+    if (socket) socket.close(1000, `capture stopped: ${normalizedReason}`);
     publish(tabId);
-  };
-}
-
-async function stop(tabId, notify = true) {
-  const state = stateFor(tabId);
-  const socket = state.socket;
-  if (notify) sendControl(tabId, state, "stop");
-  // Keep the socket open until MediaRecorder has emitted and forwarded its
-  // final chunk. Otherwise the last second of a normal stop would be lost.
-  await stopMixedFallback(state);
-  clearInterval(state.keepAlive);
-  state.keepAlive = null;
-  state.socket = null;
-  state.status = "idle";
-  state.channels.clear();
-  state.tracks.clear();
-  state.participantCount = 0;
-  state.participantCountsByFrame.clear();
-  state.selfPresent = false;
-  state.hadSelf = false;
-  cancelAutomaticStop(state);
-  state.fallbackPromoted = false;
-  if (socket) socket.close(1000, "capture stopped");
-  publish(tabId);
+  })();
+  state.stopPromise = operation;
+  try {
+    await operation;
+  } finally {
+    if (state.stopPromise === operation) state.stopPromise = null;
+  }
 }
 
 chrome.runtime.onMessage.addListener((message, sender, reply) => {
   // The offscreen document consumes this message. Do not leave a phantom reply
   // channel open from the service worker itself.
-  if (message.type === "mixed-capture-start") return undefined;
+  if (["mixed-capture-start", "mixed-capture-stop", "mixed-capture-status"].includes(message.type)) {
+    return undefined;
+  }
   const tabId = message.tabId ?? sender.tab?.id;
   if (tabId == null) return;
   const state = stateFor(tabId);
@@ -533,10 +619,13 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
       }
       break;
     case "capture-start":
-      start(tabId, message.options);
+      start(tabId, message.options, {
+        ...(Object.hasOwn(message, "tabStreamId") ? { tabStreamId: message.tabStreamId } : {}),
+        ...(Object.hasOwn(message, "tabCaptureError") ? { tabCaptureError: message.tabCaptureError } : {}),
+      });
       break;
     case "capture-stop":
-      stop(tabId);
+      stop(tabId, { reason: message.reason || "user" });
       break;
     case "capture-state":
       recoverTabRegistration(tabId, state).then(() => connectionSettings()).then(async ({ pairingToken }) => {
@@ -545,6 +634,8 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
         reply({
           status: state.status,
           error: state.error,
+          warning: state.warning,
+          capture: { ...state.capture },
           platform: state.info?.platform,
           participantCount: state.participantCount,
           connectedTracks: state.tracks.size,
@@ -557,6 +648,8 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
       }).catch(() => reply({
         status: state.status,
         error: state.error,
+        warning: state.warning,
+        capture: { ...state.capture },
         platform: state.info?.platform,
         pairingConfigured: false,
         kualiAvailable: false,
@@ -615,12 +708,7 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
             state.participantCountsByFrame.set(frameId, Math.max(0, detail.participantCount));
             state.participantCount = Math.max(0, ...state.participantCountsByFrame.values());
           }
-          const presenceParticipants = detail.inCall === false
-            ? []
-            : typeof detail.selfPresentInDom === "boolean"
-              ? (detail.selfPresentInDom ? [{ isSelf: true }] : [])
-            : detail.participants;
-          const presence = meetingPresence(frameId, state.hadSelf, presenceParticipants);
+          const presence = meetingPresence(frameId, state.hadSelf, detail);
           if (presence) {
             state.selfPresent = presence.selfPresent;
             state.hadSelf = presence.hadSelf;
@@ -681,6 +769,9 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
     case "recording-error": {
       const socket = state.socket;
       if (socket?.readyState === WebSocket.OPEN) {
+        if (state.capture.screen) {
+          markCaptureDegraded(tabId, state, message.error || "MediaRecorder failed");
+        }
         socket.send(encodeMeetingEvent({
           kind: "warning",
           ts: Date.now(),
@@ -697,8 +788,9 @@ chrome.runtime.onMessage.addListener((message, sender, reply) => {
 });
 
 chrome.tabs.onRemoved.addListener((tabId) => {
-  if (sessions.has(tabId)) stop(tabId, false);
-  sessions.delete(tabId);
+  if (!sessions.has(tabId)) return;
+  stop(tabId, { notify: false, reason: "tab-closed" })
+    .finally(() => sessions.delete(tabId));
 });
 
 chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
@@ -712,8 +804,8 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
       : state.info?.platform === "zoom"
         ? next.hostname === "zoom.us" || next.hostname.endsWith(".zoom.us")
         : next.hostname === "teams.microsoft.com";
-    if (!stillOnPlatform) stop(tabId, false);
+    if (!stillOnPlatform) stop(tabId, { notify: false, reason: "platform-navigation" });
   } catch (_) {
-    stop(tabId, false);
+    stop(tabId, { notify: false, reason: "platform-navigation" });
   }
 });

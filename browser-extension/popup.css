@@ -167,6 +167,17 @@ a:focus-visible {
 
 .pairing-field small { color: #6f9f98; font-size: 11px; }
 
+.warning {
+  margin: 13px 0 0;
+  padding: 9px 10px;
+  border: 1px solid #a16207;
+  border-radius: 8px;
+  color: #fde68a;
+  background: #422006;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
 .error { margin: 13px 0 0; color: #fecaca; font-size: 12px; overflow-wrap: anywhere; }
 
 @media (prefers-reduced-motion: reduce) {

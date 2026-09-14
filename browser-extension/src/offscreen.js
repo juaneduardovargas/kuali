@@ -266,8 +266,29 @@ async function startTab(streamId, sourceTabId, recordScreen = false) {
   }
 }
 
+function captureStatus() {
+  return {
+    ok: true,
+    active: tabId != null,
+    tabId,
+    recording: mediaRecorder?.state || "inactive",
+  };
+}
+
 chrome.runtime.onMessage.addListener((message, _sender, reply) => {
   if (message.type === "mixed-capture-start") {
+    if (!Number.isInteger(message.tabId) || typeof message.streamId !== "string" || !message.streamId) {
+      reply({ ok: false, error: "Invalid tab capture request." });
+      return false;
+    }
+    if (tabId != null && tabId !== message.tabId) {
+      reply({
+        ok: false,
+        error: `Another meeting tab (${tabId}) already owns the offscreen capture.`,
+        activeTabId: tabId,
+      });
+      return false;
+    }
     startTab(message.streamId, message.tabId, message.recordScreen === true)
       .then(() => reply({ ok: true }))
       .catch(async (error) => {
@@ -276,8 +297,17 @@ chrome.runtime.onMessage.addListener((message, _sender, reply) => {
       });
     return true;
   }
+  if (message.type === "mixed-capture-status") {
+    reply(captureStatus());
+    return false;
+  }
   if (message.type === "mixed-capture-stop") {
-    stopTab().then(() => reply({ ok: true }));
+    if (Number.isInteger(message.tabId) && tabId != null && tabId !== message.tabId) {
+      reply({ ok: false, stopped: false, activeTabId: tabId });
+      return false;
+    }
+    const stoppedTabId = tabId;
+    stopTab().then(() => reply({ ok: true, stopped: stoppedTabId != null, tabId: stoppedTabId }));
     return true;
   }
   if (message.type === "recording-microphone-pcm") {

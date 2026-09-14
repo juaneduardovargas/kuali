@@ -1,17 +1,23 @@
 /* Copyright 2026 Kuali contributors · SPDX-License-Identifier: Apache-2.0 */
 
 /**
- * Only the top document owns the authoritative Meet roster. Once it has seen
- * the current user, that user's persistent disappearance means the call UI was
- * left; the background worker adds a short grace period before stopping.
+ * Only the top document owns the authoritative Meet state. Roster nodes are
+ * routinely replaced while people join, leave, or share their screen, so a
+ * missing self entry is not an end-of-call signal. Once the call controls say
+ * the document is no longer in a meeting, the background worker adds a short
+ * grace period before stopping.
  */
-export function meetingPresence(frameId, hadSelf, participants) {
-  if (frameId !== 0 || !Array.isArray(participants)) return null;
-  const selfPresent = participants.some((participant) => participant?.isSelf);
+export function meetingPresence(frameId, hadSelf, detail) {
+  if (frameId !== 0 || !detail || typeof detail !== "object") return null;
+  const participants = Array.isArray(detail.participants) ? detail.participants : [];
+  const selfVisible = typeof detail.selfPresentInDom === "boolean"
+    ? detail.selfPresentInDom
+    : participants.some((participant) => participant?.isSelf);
+  const selfPresent = detail.inCall !== false && (hadSelf || selfVisible);
   return {
     selfPresent,
-    hadSelf: hadSelf || selfPresent,
-    shouldScheduleStop: hadSelf && !selfPresent,
+    hadSelf: hadSelf || selfVisible,
+    shouldScheduleStop: hadSelf && detail.inCall === false,
   };
 }
 

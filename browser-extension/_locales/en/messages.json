@@ -53,6 +53,7 @@
   "mixedCaptureError": { "message": "Could not capture mixed audio: $ERROR$", "placeholders": { "error": { "content": "$1" } } },
   "unsupportedMeetingError": { "message": "This tab is not a supported meeting." },
   "mixedCaptureDeniedError": { "message": "Chrome could not prepare mixed capture. Try again from this tab." },
+  "audioOnlyCaptureWarning": { "message": "Recording and transcribing audio only; tab video is unavailable. Chrome: $ERROR$", "placeholders": { "error": { "content": "$1" } } },
   "screenChunkTooLargeError": { "message": "A screen recording chunk exceeded the local safety limit." },
   "captureRejectedError": { "message": "Kuali rejected this capture." },
   "missingPairingCodeError": { "message": "Enter the 32-character pairing code from Kuali Settings before recording." },

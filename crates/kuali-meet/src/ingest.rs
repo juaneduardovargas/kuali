@@ -568,6 +568,8 @@ fn diagnostic_event(kind: &str) -> bool {
             | "active-speakers"
             | "capture-options"
             | "capture-fallback"
+            | "capture-stop"
+            | "capture-degraded"
             | "microphone-source"
             | "microphone-health"
     )
@@ -1436,6 +1438,41 @@ mod tests {
                     assert_eq!(actual, kind);
                 }
                 other => panic!("expected microphone CaptureDiagnostic, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn capture_lifecycle_events_are_retained_for_local_diagnostics() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let mut session = Session::new(
+            MeetingParams {
+                platform: "google_meet".into(),
+                native_meeting_id: "lifecycle-test".into(),
+                capture_screen: None,
+            },
+            CapturePreferences {
+                save_diagnostics: true,
+                ..Default::default()
+            },
+        );
+
+        for kind in ["capture-stop", "capture-degraded"] {
+            on_text(
+                &format!(r#"{{"kind":"{kind}","ts":42,"detail":{{"reason":"test"}}}}"#),
+                &mut session,
+                &tx,
+            );
+            match rx.try_recv() {
+                Ok(VoiceEvent::CaptureDiagnostic {
+                    kind: actual,
+                    detail,
+                    ..
+                }) => {
+                    assert_eq!(actual, kind);
+                    assert_eq!(detail.unwrap()["reason"], "test");
+                }
+                other => panic!("expected capture lifecycle diagnostic, got {other:?}"),
             }
         }
     }

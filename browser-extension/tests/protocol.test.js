@@ -720,19 +720,78 @@ test("only a visible unmuted Meet control opens the local audio gate", () => {
   }), false);
 });
 
-test("capture ends only after the top Meet roster has seen self disappear", () => {
-  assert.equal(meetingPresence(2, true, []), null, "a child frame is not authoritative");
-  assert.deepEqual(meetingPresence(0, false, []), {
+test("Meet requires sustained loss of independent call signals before ending", () => {
+  const decide = capturePolicy.stableMeetCallPresence;
+  const active = decide(null, {
+    controlsPresent: true,
+    protocolBacked: true,
+    now: 1_000,
+  });
+  assert.equal(active.inCall, true);
+
+  const contentReplacement = decide(active, {
+    controlsPresent: false,
+    protocolBacked: true,
+    now: 10_000,
+  });
+  assert.equal(contentReplacement.inCall, true, "protocol presence survives DOM replacement");
+
+  const firstMissing = decide(contentReplacement, {
+    controlsPresent: false,
+    protocolBacked: false,
+    now: 20_000,
+  });
+  assert.equal(firstMissing.inCall, true);
+  const transientMissing = decide(firstMissing, {
+    controlsPresent: false,
+    protocolBacked: false,
+    now: 24_999,
+  });
+  assert.equal(transientMissing.inCall, true);
+  const confirmedMissing = decide(transientMissing, {
+    controlsPresent: false,
+    protocolBacked: false,
+    now: 25_000,
+  });
+  assert.equal(confirmedMissing.inCall, false);
+
+  const restored = decide(firstMissing, {
+    controlsPresent: true,
+    protocolBacked: false,
+    now: 21_000,
+  });
+  assert.equal(restored.inCall, true);
+  assert.equal(restored.missingSince, null);
+});
+
+test("capture ends only after the top Meet document confirms the call ended", () => {
+  assert.equal(meetingPresence(2, true, { inCall: false }), null, "a child frame is not authoritative");
+  assert.deepEqual(meetingPresence(0, false, { inCall: true, participants: [] }), {
     selfPresent: false,
     hadSelf: false,
     shouldScheduleStop: false,
   });
-  assert.deepEqual(meetingPresence(0, false, [{ isSelf: true }]), {
+  assert.deepEqual(meetingPresence(0, false, {
+    inCall: true,
+    participants: [{ isSelf: true }],
+  }), {
     selfPresent: true,
     hadSelf: true,
     shouldScheduleStop: false,
   });
-  assert.deepEqual(meetingPresence(0, true, [{ isSelf: false }]), {
+  assert.deepEqual(meetingPresence(0, true, {
+    inCall: true,
+    selfPresentInDom: false,
+    participants: [{ isSelf: false }],
+  }), {
+    selfPresent: true,
+    hadSelf: true,
+    shouldScheduleStop: false,
+  }, "a temporary roster replacement must not stop capture");
+  assert.deepEqual(meetingPresence(0, true, {
+    inCall: false,
+    participants: [],
+  }), {
     selfPresent: false,
     hadSelf: true,
     shouldScheduleStop: true,
