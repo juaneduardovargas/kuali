@@ -116,6 +116,10 @@ unpacked installation remains supported for development and as a fallback.
 The start dialog offers visible-tab video as a per-meeting option. Its value is
 remembered in Chrome; before the first choice, the desktop setting supplies the
 default. Participant-notice consent is still confirmed for every meeting.
+If Chrome cannot start video, version 0.1.20 keeps audio capture and
+transcription active, displays the reason as a warning, and retries video on the
+next meeting. Temporary roster, layout, or screen-sharing changes do not end a
+Meet capture.
 
 ## Privacy
 

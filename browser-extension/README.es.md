@@ -95,6 +95,10 @@ instalación manual seguirá disponible para desarrollo y como alternativa.
 El diálogo de inicio ofrece el video de la pestaña como opción por reunión. La
 elección queda guardada en Chrome; antes de elegirla por primera vez se usa el
 ajuste de escritorio. El consentimiento se sigue confirmando en cada reunión.
+Si Chrome no puede iniciar el video, la versión 0.1.20 mantiene activas la
+captura de audio y la transcripción, muestra el motivo en una advertencia y
+vuelve a intentar el video en la siguiente reunión. Los cambios temporales de
+roster, diseño o pantalla compartida no terminan la captura de Meet.
 
 ## Privacidad
 
