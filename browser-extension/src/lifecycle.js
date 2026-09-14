@@ -35,3 +35,23 @@ export function fallbackFramesAfterSeparateAudio(frames, lastSeparateAudioAt, ov
   const after = lastSeparateAudioAt ? lastSeparateAudioAt + overlapMs : 0;
   return frames.filter((frame) => frame.ts >= after);
 }
+
+export function isSupportedPlatformUrl(platform, value) {
+  let url;
+  try {
+    url = value instanceof URL ? value : new URL(value);
+  } catch (_) {
+    return false;
+  }
+  if (url.protocol !== "https:") return false;
+  const host = url.hostname.toLocaleLowerCase();
+  if (platform === "google_meet") return host === "meet.google.com";
+  if (platform === "zoom") return host === "zoom.us" || host.endsWith(".zoom.us");
+  if (platform === "microsoft_teams") {
+    return host === "teams.microsoft.com"
+      || host.endsWith(".teams.microsoft.com")
+      || host === "teams.cloud.microsoft"
+      || host === "teams.live.com";
+  }
+  return false;
+}

@@ -16,6 +16,7 @@ import {
 } from "../src/health.js";
 import {
   fallbackFramesAfterSeparateAudio,
+  isSupportedPlatformUrl,
   meetingPresence,
   shouldPromoteMixedFallback,
 } from "../src/lifecycle.js";
@@ -796,4 +797,26 @@ test("capture ends only after the top Meet document confirms the call ended", ()
     hadSelf: true,
     shouldScheduleStop: true,
   });
+});
+
+test("Teams navigation accepts only manifest-declared Microsoft hosts", () => {
+  for (const url of [
+    "https://teams.microsoft.com/v2/",
+    "https://foo.teams.microsoft.com/light-meetings/launch",
+    "https://teams.cloud.microsoft/meeting",
+    "https://teams.live.com/meet/123",
+  ]) {
+    assert.equal(isSupportedPlatformUrl("microsoft_teams", url), true, url);
+  }
+  for (const url of [
+    "https://teams.microsoft.com.evil.test/meeting",
+    "https://evilteams.microsoft.com/meeting",
+    "https://foo.teams.cloud.microsoft/meeting",
+    "https://foo.teams.live.com/meeting",
+    "http://teams.microsoft.com/meeting",
+    "https://teams-microsoft.com/meeting",
+    "not a URL",
+  ]) {
+    assert.equal(isSupportedPlatformUrl("microsoft_teams", url), false, url);
+  }
 });

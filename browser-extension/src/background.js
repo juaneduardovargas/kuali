@@ -18,6 +18,7 @@ import {
 } from "./health.js";
 import {
   fallbackFramesAfterSeparateAudio,
+  isSupportedPlatformUrl,
   meetingPresence,
   shouldPromoteMixedFallback,
 } from "./lifecycle.js";
@@ -797,15 +798,7 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo) => {
   if (!changeInfo.url || !sessions.has(tabId)) return;
   const state = stateFor(tabId);
   if (!["connecting", "waiting", "capturing"].includes(state.status)) return;
-  try {
-    const next = new URL(changeInfo.url);
-    const stillOnPlatform = state.info?.platform === "google_meet"
-      ? next.hostname === "meet.google.com"
-      : state.info?.platform === "zoom"
-        ? next.hostname === "zoom.us" || next.hostname.endsWith(".zoom.us")
-        : next.hostname === "teams.microsoft.com";
-    if (!stillOnPlatform) stop(tabId, { notify: false, reason: "platform-navigation" });
-  } catch (_) {
+  if (!isSupportedPlatformUrl(state.info?.platform, changeInfo.url)) {
     stop(tabId, { notify: false, reason: "platform-navigation" });
   }
 });
